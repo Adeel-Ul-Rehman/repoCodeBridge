@@ -2,35 +2,40 @@
   "name": "repocodebridge",
   "version": "1.0.0",
   "type": "module",
-  "description": "Convert GitHub repositories to AI-readable format using Supabase",
+  "description": "Convert GitHub repositories to AI-readable format",
   "main": "server.js",
   "scripts": {
     "dev": "node server.js",
-    "start": "NODE_ENV=production node server.js",
     "build": "next build",
+    "start": "NODE_ENV=production node server.js",
+    "vercel-build": "next build",
     "cleanup": "node scripts/cleanup.js"
   },
   "dependencies": {
     "@octokit/rest": "^20.1.1",
     "@supabase/supabase-js": "^2.43.4",
-    "autoprefixer": "^10.4.19",
     "bcrypt": "^5.1.1",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-session": "^1.18.0",
     "jsonwebtoken": "^9.0.2",
     "jszip": "^3.10.1",
     "next": "14.2.3",
     "nodemailer": "^6.9.13",
+    "passport": "^0.7.0",
+    "passport-github2": "^0.1.12",
+    "passport-google-oauth20": "^2.0.0",
     "pg": "^8.11.5",
-    "postcss": "^8.4.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwindcss": "^3.4.4",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "autoprefixer": "^10.4.19",
+    "nodemon": "^3.1.0",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4"
   }
 }

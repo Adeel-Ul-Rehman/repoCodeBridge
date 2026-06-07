@@ -1,4 +1,4 @@
-// backend/middleware/auth.js - Remove the dev mode section
+// backend/middleware/auth.js - Update the authenticate function
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
 
@@ -17,8 +17,6 @@ async function authenticate(req, res, next) {
         token = req.headers.authorization.replace('Bearer ', '');
     }
     
-    // REMOVED the dev mode auto-authentication section
-    
     if (!token) {
         return res.status(401).json({ error: 'Authentication required' });
     }
@@ -29,7 +27,7 @@ async function authenticate(req, res, next) {
     }
     
     const result = await query(
-        'SELECT id, email, is_premium, premium_expires_at, created_at FROM users WHERE id = $1',
+        'SELECT id, email, is_premium, premium_expires_at, created_at, password_hash FROM users WHERE id = $1',
         [decoded.userId]
     );
     
@@ -37,8 +35,15 @@ async function authenticate(req, res, next) {
         return res.status(401).json({ error: 'User not found' });
     }
     
-    req.user = result.rows[0];
-    req.userId = req.user.id;
+    const user = result.rows[0];
+    
+    // OAuth users (no password_hash) are still valid
+    // Premium check from env
+    const premiumEmails = (process.env.PREMIUM_USERS || '').split(',');
+    user.is_premium = user.is_premium || premiumEmails.includes(user.email);
+    
+    req.user = user;
+    req.userId = user.id;
     next();
 }
 
