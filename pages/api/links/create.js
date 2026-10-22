@@ -11,20 +11,29 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Method not allowed' });
     }
     
-    await new Promise((resolve, reject) => {
-        authenticate(req, res, (err) => {
-            if (err) reject(err);
-            else resolve();
+    try {
+        await new Promise((resolve, reject) => {
+            authenticate(req, res, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
         });
-    });
+    } catch (authErr) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: 'Internal server error' });
+        }
+        return;
+    }
+    
+    if (res.headersSent) return;
     
     if (!req.user) {
         return res.status(401).json({ error: 'Authentication required' });
     }
     
-    const { repoUrl, branch, subpath, excludeTests, excludeDocs } = req.body;
+    const { repoUrl, branch, subpath, excludeTests, excludeDocs } = req.body || {};
     
-    if (!repoUrl || !repoUrl.trim()) {
+    if (!repoUrl || typeof repoUrl !== 'string' || !repoUrl.trim()) {
         return res.status(400).json({ 
             error: 'NO_URL',
             message: 'Please enter a GitHub repository URL' 
@@ -66,9 +75,9 @@ export default async function handler(req, res) {
         const urlParts = cleanUrl.replace('https://github.com/', '').split('/');
         let repoName = `${urlParts[0]}/${urlParts[1]}`;
         
-        if (subpath && subpath.trim()) {
+        if (subpath && typeof subpath === 'string' && subpath.trim()) {
             repoName += ` [/${subpath.trim().replace(/^\/+/, '')}]`;
-        } else if (branch && branch.trim()) {
+        } else if (branch && typeof branch === 'string' && branch.trim()) {
             repoName += ` (@${branch.trim()})`;
         }
         
@@ -83,9 +92,17 @@ export default async function handler(req, res) {
             expiresAt: expiresAt,
         });
         
+        // Concurrency guard: if limit was reached by concurrent requests, link is null
+        if (!link) {
+            return res.status(403).json({
+                error: 'LIMIT_REACHED',
+                message: `You have reached the maximum of ${userLimits.maxLinks} active links. Please delete an older link first.`
+            });
+        }
+        
         const fetchOptions = {
-            branch: branch?.trim() || null,
-            subpath: subpath?.trim() || null,
+            branch: typeof branch === 'string' && branch.trim() ? branch.trim() : null,
+            subpath: typeof subpath === 'string' && subpath.trim() ? subpath.trim() : null,
             excludeTests: Boolean(excludeTests),
             excludeDocs: Boolean(excludeDocs),
         };
@@ -113,11 +130,13 @@ export default async function handler(req, res) {
         });
         
     } catch (error) {
-        console.error('Create link error:', error);
-        res.status(500).json({ 
-            error: 'SERVER_ERROR', 
-            message: 'Failed to initialize link creation. Please try again.' 
-        });
+        console.error('Create link error:', error.message);
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                error: 'SERVER_ERROR', 
+                message: 'Failed to initialize link creation. Please try again.' 
+            });
+        }
     }
 }
 

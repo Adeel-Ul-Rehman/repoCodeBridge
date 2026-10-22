@@ -6,13 +6,15 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Method not allowed' });
     }
     
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
     
-    if (!email || !password) {
+    if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
         return res.status(400).json({ error: 'Email and password are required' });
     }
     
-    if (!email.includes('@')) {
+    const normalizedEmail = email.trim().toLowerCase();
+    
+    if (!normalizedEmail.includes('@') || normalizedEmail.length < 5) {
         return res.status(400).json({ error: 'Invalid email format' });
     }
     
@@ -21,16 +23,20 @@ export default async function handler(req, res) {
     }
     
     try {
-        const existingUser = await User.findByEmail(email);
+        const existingUser = await User.findByEmail(normalizedEmail);
         if (existingUser) {
             return res.status(409).json({ error: 'User already exists' });
         }
         
-        const premiumEmails = (process.env.PREMIUM_USERS || '').split(',');
-        const isPremium = premiumEmails.includes(email);
+        const rawPremiumConfig = process.env.PREMIUM_USERS || '';
+        const premiumEmails = rawPremiumConfig
+            .split(',')
+            .map(e => e.trim().toLowerCase())
+            .filter(Boolean);
+        const isPremium = premiumEmails.includes(normalizedEmail);
         
         const hashedPassword = await User.hashPassword(password);
-        const user = await User.create(email, hashedPassword, isPremium);
+        const user = await User.create(normalizedEmail, hashedPassword, isPremium);
         
         res.status(201).json({
             success: true,

@@ -66,15 +66,22 @@ async function initDatabase() {
         )`
     ];
     
+    let failedCount = 0;
     for (let i = 0; i < queries.length; i++) {
         try {
             await pool.query(queries[i]);
             console.log(`✅ Query ${i + 1}/${queries.length} executed`);
         } catch (err) {
+            failedCount++;
             console.error(`❌ Query ${i + 1} failed:`, err.message);
         }
     }
     
+    if (failedCount > 0) {
+        console.error(`\n❌ Database initialization completed with ${failedCount} error(s).`);
+        process.exit(1);
+    }
+
     console.log('\n🎉 Database initialization complete!');
     process.exit(0);
 }

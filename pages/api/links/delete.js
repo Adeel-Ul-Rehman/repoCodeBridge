@@ -16,12 +16,21 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Slug is required' });
     }
     
-    await new Promise((resolve, reject) => {
-        authenticate(req, res, (err) => {
-            if (err) reject(err);
-            else resolve();
+    try {
+        await new Promise((resolve, reject) => {
+            authenticate(req, res, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
         });
-    });
+    } catch (authErr) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: 'Internal server error' });
+        }
+        return;
+    }
+    
+    if (res.headersSent) return;
     
     if (!req.user) {
         return res.status(401).json({ error: 'Authentication required' });

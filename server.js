@@ -17,14 +17,26 @@ const handle = app.getRequestHandler();
 app.prepare().then(async () => {
     const server = express();
     
+    // Enable trust proxy for reverse proxies (Vercel, Cloudflare, Nginx, AWS)
+    server.set('trust proxy', 1);
+
+    // Normalize CORS origin for production
+    const allowedOrigin = dev 
+        ? 'http://localhost:3000' 
+        : (process.env.APP_URL || (process.env.VERCEL_URL ? (process.env.VERCEL_URL.startsWith('http') ? process.env.VERCEL_URL : `https://${process.env.VERCEL_URL}`) : true));
+
     // Middleware
     server.use(cors({
-        origin: dev ? 'http://localhost:3000' : process.env.VERCEL_URL,
+        origin: allowedOrigin,
         credentials: true,
     }));
     server.use(express.json());
     server.use(cookieParser());
     
+    if (!process.env.SESSION_SECRET && process.env.NODE_ENV === 'production') {
+        console.warn('⚠️ WARNING: SESSION_SECRET is not set in production. Using fallback secret.');
+    }
+
     // Session middleware for Passport
     server.use(session({
         secret: process.env.SESSION_SECRET || 'your-session-secret-key',
@@ -33,6 +45,7 @@ app.prepare().then(async () => {
         cookie: {
             secure: process.env.NODE_ENV === 'production',
             httpOnly: true,
+            sameSite: 'lax',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
         }
     }));

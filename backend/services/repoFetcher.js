@@ -10,6 +10,7 @@ const octokit = new Octokit({
 // Cache for repository data to avoid unnecessary re-fetches
 const repoCache = new Map();
 const CACHE_TTL = 3600000; // 1 hour
+const MAX_CACHE_ENTRIES = 100; // Maximum cached repositories to prevent uncontrolled memory growth
 
 // Directories that should always be excluded from AI conversion
 const IGNORED_DIRECTORIES = new Set([
@@ -70,22 +71,58 @@ const MAX_FILE_SIZE_BYTES = 300 * 1024; // 300 KB max per individual file
 
 // Parse GitHub URL
 export function parseGitHubUrl(url) {
-    try {
-        let cleanUrl = url.trim().replace(/\.git$/, '').replace(/\/$/, '');
-        const urlObj = new URL(cleanUrl);
-        const parts = urlObj.pathname.split('/').filter(Boolean);
-        
-        if (parts.length >= 2) {
-            return {
-                owner: parts[0],
-                repo: parts[1],
-                fullName: `${parts[0]}/${parts[1]}`,
-            };
-        }
-        throw new Error('Invalid GitHub URL');
-    } catch (err) {
+    if (!url || typeof url !== 'string' || !url.trim()) {
         throw new Error('Invalid GitHub URL format. Please use https://github.com/owner/repository');
     }
+
+    let urlObj;
+    try {
+        urlObj = new URL(url.trim());
+    } catch {
+        throw new Error('Invalid GitHub URL format. Please use https://github.com/owner/repository');
+    }
+
+    // Must use http or https protocol
+    if (urlObj.protocol !== 'https:' && urlObj.protocol !== 'http:') {
+        throw new Error('Invalid protocol. GitHub repository URLs must use http:// or https://');
+    }
+
+    // Parsed hostname must be exactly github.com
+    const hostname = urlObj.hostname.toLowerCase();
+    if (hostname !== 'github.com') {
+        throw new Error('Invalid host. Only repository URLs from github.com are supported');
+    }
+
+    // Must not use unexpected custom ports
+    if (urlObj.port && urlObj.port !== '80' && urlObj.port !== '443') {
+        throw new Error('Invalid port. Please use standard HTTP/HTTPS ports');
+    }
+
+    // Path must contain exactly owner and repository
+    const parts = urlObj.pathname.split('/').filter(Boolean);
+    if (parts.length !== 2) {
+        throw new Error('Invalid GitHub URL path. Expected format: https://github.com/owner/repository');
+    }
+
+    const owner = parts[0].trim();
+    let repo = parts[1].trim().replace(/\.git$/, '');
+
+    if (!owner || !repo || repo === '.' || repo === '..') {
+        throw new Error('Missing or invalid repository or owner segment');
+    }
+
+    const validOwner = /^[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9])){0,38}$/;
+    const validRepo = /^[a-zA-Z0-9_.-]{1,100}$/;
+
+    if (!validOwner.test(owner) || !validRepo.test(repo)) {
+        throw new Error('Repository URL contains invalid characters in username or repository name');
+    }
+
+    return {
+        owner,
+        repo,
+        fullName: `${owner}/${repo}`,
+    };
 }
 
 // Get repository information from GitHub API
@@ -109,7 +146,7 @@ export async function getRepoInfo(owner, repo) {
 
 // Validate repository before processing
 export async function validateRepository(githubUrl) {
-    if (!githubUrl || !githubUrl.trim()) {
+    if (!githubUrl || typeof githubUrl !== 'string' || !githubUrl.trim()) {
         return {
             valid: false,
             error: 'NO_URL',
@@ -117,16 +154,19 @@ export async function validateRepository(githubUrl) {
         };
     }
 
-    if (!githubUrl.includes('github.com')) {
+    let parsed;
+    try {
+        parsed = parseGitHubUrl(githubUrl);
+    } catch (err) {
         return {
             valid: false,
             error: 'INVALID_URL',
-            message: 'Please enter a valid GitHub URL (e.g. https://github.com/facebook/react).',
+            message: err.message || 'Please enter a valid GitHub URL (e.g. https://github.com/facebook/react).',
         };
     }
 
     try {
-        const { owner, repo, fullName } = parseGitHubUrl(githubUrl);
+        const { owner, repo, fullName } = parsed;
         
         let repoData;
         try {
@@ -296,6 +336,13 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
 
     console.log(`[RepoFetcher] Streaming zipball from: ${successfulUrl}`);
     const arrayBuffer = await response.arrayBuffer();
+    
+    // Bound archive download size (150 MB)
+    const MAX_ZIPBALL_SIZE = 150 * 1024 * 1024;
+    if (arrayBuffer.byteLength > MAX_ZIPBALL_SIZE) {
+        throw new Error('Repository archive size exceeds maximum limit of 150 MB');
+    }
+
     const zip = await JSZip.loadAsync(arrayBuffer);
     
     const files = [];
@@ -305,10 +352,18 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
     }
 
     const rootPrefix = entries[0].split('/')[0] + '/';
+    const MAX_EXTRACTED_FILES = 5000;
+    const MAX_TOTAL_DECOMPRESSED_BYTES = 100 * 1024 * 1024; // 100 MB decompressed code limit
+    let totalExtractedBytes = 0;
 
     for (const [entryPath, zipEntry] of Object.entries(zip.files)) {
         if (zipEntry.dir) continue;
         
+        if (files.length >= MAX_EXTRACTED_FILES || totalExtractedBytes >= MAX_TOTAL_DECOMPRESSED_BYTES) {
+            console.warn(`[RepoFetcher] Hit archive safety bounds (files: ${files.length}, bytes: ${totalExtractedBytes}). Stopping extraction.`);
+            break;
+        }
+
         // Strip the root prefix folder
         let relativePath = entryPath;
         if (relativePath.startsWith(rootPrefix)) {
@@ -322,6 +377,12 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
 
         try {
             let content = await zipEntry.async('text');
+            
+            // Skip binary content that contains null bytes
+            if (content.slice(0, 8192).includes('\0')) {
+                continue;
+            }
+
             let isTruncated = false;
 
             if (content.length > MAX_FILE_SIZE_BYTES) {
@@ -329,6 +390,8 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
                     `\n\n// [... Content truncated: File size exceeded ${Math.round(MAX_FILE_SIZE_BYTES / 1024)} KB limit for AI context ...]`;
                 isTruncated = true;
             }
+
+            totalExtractedBytes += content.length;
 
             files.push({
                 path: relativePath,
@@ -362,9 +425,15 @@ async function fetchViaGitTree(owner, repo, branch, options = {}) {
         throw new Error('Failed to retrieve git tree');
     }
 
-    const candidateFiles = treeRes.data.tree.filter(item => 
+    let candidateFiles = treeRes.data.tree.filter(item => 
         item.type === 'blob' && isPathIncludable(item.path, options)
     );
+
+    const MAX_CANDIDATE_FILES = 5000;
+    if (candidateFiles.length > MAX_CANDIDATE_FILES) {
+        console.warn(`[RepoFetcher] Capping candidate files at ${MAX_CANDIDATE_FILES} (found ${candidateFiles.length})`);
+        candidateFiles = candidateFiles.slice(0, MAX_CANDIDATE_FILES);
+    }
 
     console.log(`   Found ${candidateFiles.length} candidate files after filtering`);
 
@@ -383,6 +452,12 @@ async function fetchViaGitTree(owner, repo, branch, options = {}) {
                         file_sha: fileItem.sha,
                     });
                     let content = Buffer.from(blobRes.data.content, 'base64').toString('utf-8');
+                    
+                    // Skip binary content that contains null bytes
+                    if (content.slice(0, 8192).includes('\0')) {
+                        return null;
+                    }
+
                     let isTruncated = false;
                     if (content.length > MAX_FILE_SIZE_BYTES) {
                         content = content.slice(0, MAX_FILE_SIZE_BYTES) + 
@@ -471,12 +546,35 @@ export async function fetchRepository(githubUrl, options = {}, forceRefresh = fa
         fetchedAt: new Date().toISOString(),
     };
 
+    // Bound cache memory: evict oldest entry if size limit reached
+    if (repoCache.size >= MAX_CACHE_ENTRIES) {
+        const oldestKey = repoCache.keys().next().value;
+        if (oldestKey) repoCache.delete(oldestKey);
+    }
+
     repoCache.set(cacheKey, {
         data: result,
         timestamp: Date.now(),
     });
 
     return result;
+}
+
+// Invalidate cache for a specific repository rather than flushing everyone's cache
+export function invalidateRepoCache(githubUrl) {
+    if (!githubUrl || typeof githubUrl !== 'string') return;
+    try {
+        const cleanUrl = githubUrl.trim().replace(/\.git$/, '').replace(/\/$/, '');
+        const prefix = `${cleanUrl}::`;
+        for (const key of repoCache.keys()) {
+            if (key.startsWith(prefix) || key === cleanUrl) {
+                repoCache.delete(key);
+            }
+        }
+        console.log(`[RepoFetcher] Targeted cache invalidation for: ${cleanUrl}`);
+    } catch {
+        // Safe fallback
+    }
 }
 
 export function clearRepoCache() {

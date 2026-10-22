@@ -45,15 +45,22 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
         proxy: true, // Crucial for reverse proxies & HTTPS (Vercel/Cloudflare)
     }, async (accessToken, refreshToken, profile, done) => {
         try {
-            const email = profile.emails?.[0]?.value;
-            if (!email) {
+            const rawEmail = profile.emails?.[0]?.value;
+            if (!rawEmail) {
                 return done(new Error('No email found in your Google profile. Please allow email access.'), null);
             }
+            const email = rawEmail.trim().toLowerCase();
             
             let user = await User.findByEmail(email);
             if (!user) {
-                user = await User.create(email, null);
-                console.log(`✅ New user registered via Google: ${email}`);
+                try {
+                    user = await User.create(email, null);
+                    console.log(`✅ New user registered via Google: ${email}`);
+                } catch (createErr) {
+                    // Handle concurrent registration race condition
+                    user = await User.findByEmail(email);
+                    if (!user) throw createErr;
+                }
             }
             
             await linkOAuthAccount(user.id, 'google', profile.id);
@@ -61,7 +68,7 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
             
             return done(null, user);
         } catch (err) {
-            console.error('Google Strategy error:', err);
+            console.error('Google Strategy error:', err.message);
             return done(err, null);
         }
     }));
@@ -87,11 +94,18 @@ if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
             if (!email) {
                 email = `${profile.username}@users.noreply.github.com`;
             }
+            email = email.trim().toLowerCase();
             
             let user = await User.findByEmail(email);
             if (!user) {
-                user = await User.create(email, null);
-                console.log(`✅ New user registered via GitHub: ${email}`);
+                try {
+                    user = await User.create(email, null);
+                    console.log(`✅ New user registered via GitHub: ${email}`);
+                } catch (createErr) {
+                    // Handle concurrent registration race condition
+                    user = await User.findByEmail(email);
+                    if (!user) throw createErr;
+                }
             }
             
             await linkOAuthAccount(user.id, 'github', profile.id);
@@ -99,7 +113,7 @@ if (process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET) {
             
             return done(null, user);
         } catch (err) {
-            console.error('GitHub Strategy error:', err);
+            console.error('GitHub Strategy error:', err.message);
             return done(err, null);
         }
     }));

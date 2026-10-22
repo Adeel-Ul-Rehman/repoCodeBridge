@@ -13,6 +13,14 @@ function getPool() {
         pool = new Pool({
             connectionString: process.env.DATABASE_URL,
             ssl: isLocal ? false : { rejectUnauthorized: false },
+            max: 10,
+            idleTimeoutMillis: 30000,
+            connectionTimeoutMillis: 5000,
+        });
+
+        // Prevent unexpected idle connection errors from crashing the Node.js process
+        pool.on('error', (err) => {
+            console.error('Unexpected database client error on idle client:', err.message);
         });
     }
     return pool;

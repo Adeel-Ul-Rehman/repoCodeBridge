@@ -19,17 +19,23 @@ class Link {
         // Strict 7 days validity for all links
         const expiresAt = data.expiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
         
+        // Concurrency-safe atomic insert enforcing the 50 active links limit
         const result = await query(
             `INSERT INTO links (id, user_id, repo_url, repo_name, slug, expires_at, status, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, 'processing', NOW())
+             SELECT $1, $2, $3, $4, $5, $6, 'processing', NOW()
+             WHERE (
+                 SELECT COUNT(*) FROM links 
+                 WHERE user_id = $2 AND expires_at > NOW() AND status IN ('ready', 'processing')
+             ) < 50
              RETURNING id, slug, repo_url, repo_name, expires_at, status`,
             [id, data.userId, data.repoUrl, data.repoName, slug, expiresAt]
         );
         
-        return result.rows[0];
+        return result.rows[0] || null;
     }
     
     static async findBySlug(slug) {
+        if (!slug) return null;
         const result = await query(
             `SELECT l.*, u.email as user_email 
              FROM links l 
@@ -51,22 +57,40 @@ class Link {
         return result.rows;
     }
     
-    static async updateWithData(id, data) {
+    // Atomically claim link for refresh, preventing concurrent competing refresh jobs
+    static async claimRefresh(id, userId) {
         const result = await query(
             `UPDATE links 
+             SET status = 'processing', last_error = NULL
+             WHERE id = $1 AND user_id = $2 AND status != 'processing'
+             RETURNING *`,
+            [id, userId]
+        );
+        return result.rows[0] || null;
+    }
+    
+    static async updateWithData(id, data, startedAt = null) {
+        let sql = `UPDATE links 
              SET repo_size_bytes = COALESCE($2, repo_size_bytes),
                  file_count = COALESCE($3, file_count),
                  gist_id = COALESCE($4, gist_id),
                  gist_url = COALESCE($5, gist_url),
                  b2_key = COALESCE($6, b2_key),
                  status = 'ready',
+                 last_error = NULL,
                  last_fetched_at = NOW(),
                  processed_at = NOW()
-             WHERE id = $1
-             RETURNING *`,
-            [id, data.size, data.fileCount, data.gistId, data.gistUrl, data.b2Key]
-        );
-        return result.rows[0];
+             WHERE id = $1`;
+        
+        const params = [id, data.size, data.fileCount, data.gistId, data.gistUrl, data.b2Key];
+        if (startedAt) {
+            sql += ` AND (processed_at IS NULL OR processed_at <= $7)`;
+            params.push(startedAt);
+        }
+        sql += ` RETURNING *`;
+        
+        const result = await query(sql, params);
+        return result.rows[0] || null;
     }
     
     static async markFailed(id, errorMessage) {
@@ -78,6 +102,20 @@ class Link {
             [id, errorMessage]
         );
         return result.rows[0];
+    }
+    
+    // For refresh failures: keep existing gist_url content accessible if present
+    static async markRefreshFailed(id, errorMessage) {
+        const result = await query(
+            `UPDATE links 
+             SET status = CASE WHEN gist_url IS NOT NULL THEN 'ready' ELSE 'failed' END,
+                 last_error = $2,
+                 processed_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [id, errorMessage]
+        );
+        return result.rows[0] || null;
     }
     
     static async delete(id, userId) {

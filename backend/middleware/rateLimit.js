@@ -1,5 +1,5 @@
 // backend/middleware/rateLimit.js
-const rateLimit = require('express-rate-limit');
+import rateLimit from 'express-rate-limit';
 
 // General API rate limiter
 const apiLimiter = rateLimit({
@@ -28,4 +28,5 @@ function premiumRateLimit(req, res, next) {
     return createLinkLimiter(req, res, next);
 }
 
-module.exports = { apiLimiter, createLinkLimiter, premiumRateLimit };
+export { apiLimiter, createLinkLimiter, premiumRateLimit };
+export default apiLimiter;

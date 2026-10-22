@@ -1,7 +1,7 @@
 // pages/api/links/[slug]/refresh.js
 import Link from '../../../../backend/models/Link.js';
 import { authenticate } from '../../../../backend/middleware/auth.js';
-import { fetchRepository, clearRepoCache } from '../../../../backend/services/repoFetcher.js';
+import { fetchRepository, invalidateRepoCache } from '../../../../backend/services/repoFetcher.js';
 import { formatToMarkdown } from '../../../../backend/services/codeFormatter.js';
 import { uploadToSupabase } from '../../../../utils/supabaseStorage.js';
 
@@ -12,12 +12,21 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Method not allowed' });
     }
     
-    await new Promise((resolve, reject) => {
-        authenticate(req, res, (err) => {
-            if (err) reject(err);
-            else resolve();
+    try {
+        await new Promise((resolve, reject) => {
+            authenticate(req, res, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
         });
-    });
+    } catch (authErr) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: 'Internal server error' });
+        }
+        return;
+    }
+    
+    if (res.headersSent) return;
     
     if (!req.user) {
         return res.status(401).json({ error: 'Authentication required' });
@@ -34,17 +43,24 @@ export default async function handler(req, res) {
             return res.status(403).json({ error: 'You do not own this link' });
         }
         
-        if (link.status === 'processing') {
+        const isExpired = new Date(link.expires_at) < new Date() || link.status === 'expired';
+        if (isExpired) {
+            return res.status(410).json({ 
+                error: 'LINK_EXPIRED', 
+                message: 'This repository link has expired. Links remain active for 7 days.' 
+            });
+        }
+        
+        // Atomically claim refresh: ensures only one worker processes this link at a time
+        const claimedLink = await Link.claimRefresh(link.id, req.user.id);
+        if (!claimedLink) {
             return res.status(400).json({ error: 'Link is already being processed. Please wait.' });
         }
         
         console.log(`🔄 Refreshing repository: ${link.repo_name} (${slug})`);
         
-        // Mark as processing
-        await Link.markFailed(link.id, 'Refreshing...');
-        
-        // Clear cache for fresh fetch
-        clearRepoCache();
+        // Targeted cache invalidation only for this repository
+        invalidateRepoCache(link.repo_url);
         
         // Process refresh in background
         refreshLinkInBackground(link.id, link.repo_url, link.repo_name, slug);
@@ -56,16 +72,26 @@ export default async function handler(req, res) {
         
     } catch (error) {
         console.error('Refresh error:', error);
-        res.status(500).json({ error: error.message || 'Failed to refresh repository' });
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to refresh repository' });
+        }
     }
 }
 
 async function refreshLinkInBackground(linkId, repoUrl, repoName, slug) {
+    const startedAt = new Date();
     try {
         console.log(`🔄 Refreshing link ${linkId} for ${repoName}`);
         
-        // Force refresh from GitHub (ignore cache)
-        const repoData = await fetchRepository(repoUrl, true);
+        // Preserve applicable branch or subpath if present in repo_name
+        const options = {};
+        const branchMatch = repoName.match(/\(@([^)]+)\)/);
+        if (branchMatch) options.branch = branchMatch[1].trim();
+        const subpathMatch = repoName.match(/\[\/([^\]]+)\]/);
+        if (subpathMatch) options.subpath = subpathMatch[1].trim();
+        
+        // Correct argument placement: 1: url, 2: options, 3: forceRefresh=true
+        const repoData = await fetchRepository(repoUrl, options, true);
         console.log(`   Fetched ${repoData.repoInfo.totalFiles} files (fresh from GitHub)`);
         
         const markdownContent = formatToMarkdown(repoData);
@@ -81,7 +107,7 @@ async function refreshLinkInBackground(linkId, repoUrl, repoName, slug) {
             gistId: linkId,
             gistUrl: result.publicUrl,
             b2Key: result.key,
-        });
+        }, startedAt);
         
         console.log(`✅ Link ${linkId} refreshed successfully`);
         console.log(`   File count: ${repoData.repoInfo.totalFiles} files`);
@@ -89,6 +115,7 @@ async function refreshLinkInBackground(linkId, repoUrl, repoName, slug) {
         
     } catch (error) {
         console.error(`❌ Failed to refresh link ${linkId}:`, error.message);
-        await Link.markFailed(linkId, error.message);
+        // Preserve existing gist_url so user code remains readable if refresh fails
+        await Link.markRefreshFailed(linkId, error.message || 'Failed to refresh repository');
     }
 }
