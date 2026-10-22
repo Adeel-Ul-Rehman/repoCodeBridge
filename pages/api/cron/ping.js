@@ -1,5 +1,5 @@
-// pages/api/cron/ping.js
 import { pingSupabase } from '../../../scripts/ping-supabase.js';
+import Link from '../../../backend/models/Link.js';
 
 export default async function handler(req, res) {
     // Allow GET and POST
@@ -29,10 +29,14 @@ export default async function handler(req, res) {
         const source = req.headers['user-agent']?.includes('GitHub') ? 'github-actions' : (req.query?.source || 'api-cron');
         const result = await pingSupabase(source);
 
+        // Sweep and recover any conversion or refresh jobs stuck in processing > 5 mins
+        const recoveredJobs = await Link.recoverStuckJobs(5).catch(() => []);
+
         if (result.success) {
             return res.status(200).json({
                 status: 'ok',
                 message: 'Supabase database & storage keep-alive ping successful. Project will remain active.',
+                recoveredJobsCount: recoveredJobs.length,
                 ...result,
             });
         } else {

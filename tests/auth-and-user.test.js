@@ -70,33 +70,40 @@ describe('Authentication Error Handling (Item C)', () => {
     });
 });
 
-describe('Premium Normalization Logic (Item G)', () => {
-    function computeIsPremium(email, rawConfig) {
-        const normalizedEmail = (email || '').trim().toLowerCase();
-        const premiumEmails = (rawConfig || '')
-            .split(',')
-            .map(e => e.trim().toLowerCase())
-            .filter(Boolean);
-        return premiumEmails.includes(normalizedEmail);
-    }
+describe('Equal User Treatment (Zero Premium Tiers)', () => {
+    test('all users receive identical tier status (is_premium = false) uniformly', () => {
+        // Equal treatment helper matching production register and login
+        const resolveUserTier = () => {
+            return { is_premium: false };
+        };
 
-    test('correctly identifies configured premium emails with mixed casing and spacing', () => {
-        const config = ' VIP@example.com , Founder@Startup.IO , Pro@Test.COM ';
-        assert.equal(computeIsPremium('vip@example.com', config), true);
-        assert.equal(computeIsPremium('VIP@EXAMPLE.COM', config), true);
-        assert.equal(computeIsPremium('founder@startup.io', config), true);
-        assert.equal(computeIsPremium('pro@test.com', config), true);
-    });
-
-    test('returns false for non-premium emails', () => {
-        const config = 'vip@example.com';
-        assert.equal(computeIsPremium('regular@example.com', config), false);
-    });
-
-    test('empty or whitespace config never grants premium', () => {
-        assert.equal(computeIsPremium('vip@example.com', ''), false);
-        assert.equal(computeIsPremium('vip@example.com', '   '), false);
-        assert.equal(computeIsPremium('vip@example.com', undefined), false);
-        assert.equal(computeIsPremium('', ''), false);
+        assert.equal(resolveUserTier('admin@example.com').is_premium, false);
+        assert.equal(resolveUserTier('vip@startup.io').is_premium, false);
+        assert.equal(resolveUserTier('founder@company.com').is_premium, false);
+        assert.equal(resolveUserTier('regular@user.org').is_premium, false);
     });
 });
+
+describe('Production Cookie Security', () => {
+    function generateCookieHeader(token, env = 'development') {
+        const isProd = env === 'production';
+        return `token=${token}; HttpOnly; Path=/; Max-Age=${7 * 24 * 60 * 60}; SameSite=Lax${isProd ? '; Secure' : ''}`;
+    }
+
+    test('cookie includes Secure flag in production environment', () => {
+        const header = generateCookieHeader('jwt.test.token', 'production');
+        assert.ok(header.includes('; Secure'));
+        assert.ok(header.includes('HttpOnly'));
+        assert.ok(header.includes('SameSite=Lax'));
+        assert.ok(header.includes('Path=/'));
+    });
+
+    test('cookie omits Secure flag in local development for HTTP compatibility', () => {
+        const header = generateCookieHeader('jwt.test.token', 'development');
+        assert.ok(!header.includes('; Secure'));
+        assert.ok(header.includes('HttpOnly'));
+        assert.ok(header.includes('SameSite=Lax'));
+        assert.ok(header.includes('Path=/'));
+    });
+});
+

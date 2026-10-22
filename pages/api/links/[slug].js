@@ -1,7 +1,14 @@
 // pages/api/links/[slug].js
 import Link from '../../../backend/models/Link.js';
+import Job from '../../../backend/models/Job.js';
 import { authenticate } from '../../../backend/middleware/auth.js';
-import { deleteFromSupabase } from '../../../utils/supabaseStorage.js';
+import { deleteFromSupabase, deleteAllLinkObjects } from '../../../utils/supabaseStorage.js';
+import { cancelJob } from '../../../backend/services/jobManager.js';
+import { invalidateRepoCache } from '../../../backend/services/repoFetcher.js';
+
+export const config = {
+    maxDuration: 60,
+};
 
 export default async function handler(req, res) {
     const slug = req.query?.slug || req.params?.slug;
@@ -26,8 +33,25 @@ async function getLink(req, res, slug, raw) {
             return res.status(404).json({ error: 'Link not found' });
         }
 
+        // Check if link was deleted
+        if (link.status === 'deleted') {
+            return res.status(410).json({
+                error: 'LINK_DELETED',
+                message: 'This repository-code link no longer exists.',
+            });
+        }
+
+        let currentLink = link;
+        if (currentLink.status === 'processing') {
+            const ageMs = Date.now() - new Date(currentLink.processed_at || currentLink.created_at).getTime();
+            if (ageMs > 5 * 60 * 1000) {
+                await Link.recoverStuckJobs(5).catch(() => {});
+                currentLink = (await Link.findBySlug(slug)) || currentLink;
+            }
+        }
+
         // Check 7-day expiration
-        const isExpired = new Date(link.expires_at) < new Date() || link.status === 'expired';
+        const isExpired = new Date(currentLink.expires_at) < new Date() || currentLink.status === 'expired';
         if (isExpired) {
             return res.status(410).json({ 
                 error: 'LINK_EXPIRED', 
@@ -42,9 +66,9 @@ async function getLink(req, res, slug, raw) {
             req.headers.accept?.includes('text/markdown') || 
             req.headers.accept?.includes('text/plain');
 
-        if (wantsRaw && link.gist_url && link.status === 'ready') {
+        if (wantsRaw && currentLink.gist_url && currentLink.status === 'ready') {
             try {
-                const storageRes = await fetch(link.gist_url);
+                const storageRes = await fetch(currentLink.gist_url);
                 if (storageRes.ok) {
                     const markdownText = await storageRes.text();
                     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -54,7 +78,7 @@ async function getLink(req, res, slug, raw) {
             } catch (fetchErr) {
                 console.warn('Could not proxy storage markdown:', fetchErr.message);
                 // Fall back to redirect if fetch failed
-                return res.redirect(link.gist_url);
+                return res.redirect(currentLink.gist_url);
             }
         }
         
@@ -65,18 +89,19 @@ async function getLink(req, res, slug, raw) {
         res.status(200).json({
             success: true,
             link: {
-                id: link.id,
-                slug: link.slug,
-                repo_url: link.repo_url,
-                repo_name: link.repo_name,
-                file_count: link.file_count,
-                created_at: link.created_at,
-                expires_at: link.expires_at,
-                view_count: link.view_count,
-                status: link.status,
-                gist_url: link.gist_url,
-                ai_url: `${baseUrl}/r/${link.slug}`,
-                raw_url: `${baseUrl}/api/links/${link.slug}?raw=true`,
+                id: currentLink.id,
+                slug: currentLink.slug,
+                repo_url: currentLink.repo_url,
+                repo_name: currentLink.repo_name,
+                file_count: currentLink.file_count,
+                created_at: currentLink.created_at,
+                expires_at: currentLink.expires_at,
+                view_count: currentLink.view_count,
+                status: currentLink.status,
+                last_error: currentLink.last_error,
+                gist_url: currentLink.gist_url,
+                ai_url: `${baseUrl}/r/${currentLink.slug}`,
+                raw_url: `${baseUrl}/api/links/${currentLink.slug}?raw=true`,
             },
         });
         
@@ -122,15 +147,28 @@ async function deleteLink(req, res, slug) {
             return res.status(403).json({ error: 'You do not own this link' });
         }
         
-        // Delete from Supabase storage
+        // 1. Mark link as deleting to prevent new work from starting against it
+        await Link.markDeleting(link.id, req.user.id);
+
+        // 2. Invalidate active/queued jobs for this link (in-memory and durable database state)
+        cancelJob(link.id);
+        await Job.cancelByLinkId(link.id);
+
+        // 3. Invalidate memory cache for this repository
+        invalidateRepoCache(link.repo_url);
+
+        // 4. Delete external storage objects (index.md, snapshot.json, tree.json, etc.)
+        let storageCleanupWarning = null;
         try {
-            await deleteFromSupabase(slug);
+            await deleteAllLinkObjects(slug);
         } catch (err) {
-            console.warn(`Supabase delete note: ${err.message}`);
+            storageCleanupWarning = err.message;
+            console.warn(`[DeleteLink] External storage cleanup failed: ${err.message}`);
+            await Link.recordFailedCleanup('supabase_storage', `${slug}/*`, err.message);
         }
         
-        // Delete from database
-        const deleted = await Link.delete(link.id, req.user.id);
+        // 5. Remove associated database records and record permanent tombstone
+        const deleted = await Link.delete(link.id, req.user.id, slug);
         
         if (!deleted) {
             return res.status(404).json({ error: 'Link not found' });
@@ -138,7 +176,9 @@ async function deleteLink(req, res, slug) {
         
         res.status(200).json({
             success: true,
-            message: 'Link deleted successfully',
+            storageCleaned: !storageCleanupWarning,
+            warning: storageCleanupWarning ? `External storage cleanup recorded for retry: ${storageCleanupWarning}` : undefined,
+            message: 'Repository link and generated data deleted successfully.',
         });
         
     } catch (error) {

@@ -28,4 +28,13 @@ describe('Repository Refresh & Cache Management (Items D & E)', () => {
         assert.equal(plainRepoName.match(/\(@([^)]+)\)/), null);
         assert.equal(plainRepoName.match(/\[\/([^\]]+)\]/), null);
     });
+
+    test('legacy deletion and download routes export callable handlers', async () => {
+        const legacyDeleteHandler = (await import('../pages/api/links/[slug]/delete.js')).default;
+        const legacyDownloadHandler = (await import('../pages/api/links/[slug]/download.js')).default;
+
+        assert.equal(typeof legacyDeleteHandler, 'function');
+        assert.equal(typeof legacyDownloadHandler, 'function');
+    });
 });
+

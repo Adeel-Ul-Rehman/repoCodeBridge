@@ -1,10 +1,15 @@
 // pages/api/auth/register.js
 import User from '../../../backend/models/User.js';
+import { authLimiter, applyRateLimit } from '../../../backend/middleware/rateLimit.js';
 
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
     }
+
+    // Apply rate limiting (15 attempts per 15 min per IP)
+    await applyRateLimit(req, res, authLimiter);
+    if (res.headersSent) return;
     
     const { email, password } = req.body || {};
     
@@ -28,22 +33,16 @@ export default async function handler(req, res) {
             return res.status(409).json({ error: 'User already exists' });
         }
         
-        const rawPremiumConfig = process.env.PREMIUM_USERS || '';
-        const premiumEmails = rawPremiumConfig
-            .split(',')
-            .map(e => e.trim().toLowerCase())
-            .filter(Boolean);
-        const isPremium = premiumEmails.includes(normalizedEmail);
-        
+        // Equal treatment for all users (zero premium-specific branching)
         const hashedPassword = await User.hashPassword(password);
-        const user = await User.create(normalizedEmail, hashedPassword, isPremium);
+        const user = await User.create(normalizedEmail, hashedPassword, false);
         
         res.status(201).json({
             success: true,
             user: {
                 id: user.id,
                 email: user.email,
-                is_premium: user.is_premium,
+                is_premium: false,
             }
         });
     } catch (error) {

@@ -6,6 +6,7 @@ import { useRouter } from 'next/router.js';
 import DeleteModal from '../components/DeleteModal.js';
 import RefreshModal from '../components/RefreshModal.js';
 import PromptModal from '../components/PromptModal.js';
+import RepoTreePicker from '../components/RepoTreePicker.js';
 
 export default function Dashboard() {
     const router = useRouter();
@@ -17,6 +18,12 @@ export default function Dashboard() {
     const [excludeTests, setExcludeTests] = useState(true);
     const [excludeDocs, setExcludeDocs] = useState(false);
     const [showAdvanced, setShowAdvanced] = useState(false);
+    
+    // Selective conversion & Tree state
+    const [treeData, setTreeData] = useState([]);
+    const [selectedPaths, setSelectedPaths] = useState([]);
+    const [fetchingTree, setFetchingTree] = useState(false);
+    const [showTreePicker, setShowTreePicker] = useState(false);
     
     const [loading, setLoading] = useState(true);
     const [creating, setCreating] = useState(false);
@@ -71,6 +78,43 @@ export default function Dashboard() {
         }
     };
     
+    const handleInspectTree = async () => {
+        const targetUrl = repoUrl.trim();
+        if (!targetUrl) {
+            setError('Please enter a GitHub repository URL first to inspect files');
+            setTimeout(() => setError(''), 5000);
+            return;
+        }
+
+        setFetchingTree(true);
+        setError('');
+        try {
+            const res = await fetch('/api/repo/tree', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    repoUrl: targetUrl,
+                    branch: branch.trim() || undefined,
+                    subpath: subpath.trim() || undefined,
+                }),
+            });
+            const data = await res.json();
+            if (res.ok && data.tree) {
+                setTreeData(data.tree);
+                setSelectedPaths(data.tree.map(f => f.path));
+                setShowTreePicker(true);
+            } else {
+                setError(data.message || data.error || 'Failed to fetch repository tree metadata');
+                setTimeout(() => setError(''), 8000);
+            }
+        } catch (err) {
+            setError('Failed to fetch repository tree. Check your network and try again.');
+            setTimeout(() => setError(''), 6000);
+        } finally {
+            setFetchingTree(false);
+        }
+    };
+    
     const handleCreateLink = async (e) => {
         if (e) e.preventDefault();
         const targetUrl = repoUrl.trim();
@@ -111,6 +155,7 @@ export default function Dashboard() {
                     subpath: subpath.trim() || undefined,
                     excludeTests,
                     excludeDocs,
+                    selectedPaths: (selectedPaths && selectedPaths.length > 0 && selectedPaths.length < treeData.length) ? selectedPaths : (selectedPaths && selectedPaths.length > 0 ? selectedPaths : undefined),
                 }),
             });
             
@@ -123,6 +168,9 @@ export default function Dashboard() {
                 setBranch('');
                 setSubpath('');
                 setShowAdvanced(false);
+                setTreeData([]);
+                setSelectedPaths([]);
+                setShowTreePicker(false);
                 setTimeout(() => fetchUserAndLinks(), 1200);
                 setTimeout(() => setSuccess(''), 6000);
             } else {
@@ -464,6 +512,28 @@ export default function Dashboard() {
                             </div>
 
                             <button
+                                type="button"
+                                onClick={handleInspectTree}
+                                disabled={creating || fetchingTree}
+                                className="bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs sm:text-sm px-4 py-3 rounded-2xl border border-slate-300 transition shadow-2xs flex items-center justify-center gap-2 whitespace-nowrap disabled:opacity-60 cursor-pointer"
+                                title="Inspect repository tree and select specific folders or files before converting"
+                            >
+                                {fetchingTree ? (
+                                    <>
+                                        <span className="w-4 h-4 border-2 border-indigo-600/30 border-t-indigo-600 rounded-full animate-spin"></span>
+                                        <span>Fetching Tree...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg className="w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                        </svg>
+                                        <span>{selectedPaths.length > 0 && selectedPaths.length < treeData.length ? `Selected (${selectedPaths.length})` : 'Select Files'}</span>
+                                    </>
+                                )}
+                            </button>
+
+                            <button
                                 type="submit"
                                 disabled={creating}
                                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs sm:text-sm px-7 py-3 rounded-2xl transition shadow-xs flex items-center justify-center gap-2 whitespace-nowrap disabled:opacity-60 cursor-pointer"
@@ -483,6 +553,38 @@ export default function Dashboard() {
                                 )}
                             </button>
                         </div>
+
+                        {/* Selective Conversion Tree Picker */}
+                        {showTreePicker && treeData.length > 0 && (
+                            <div className="mt-3 p-4 bg-slate-50 border border-slate-200 rounded-2xl animate-fadeIn">
+                                <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-200">
+                                    <div>
+                                        <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                                            <svg className="w-4 h-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                                            </svg>
+                                            <span>Selective Repository Conversion</span>
+                                        </h4>
+                                        <p className="text-xs text-slate-500">
+                                            Select specific folders or files to convert. Only selected items will be processed into AI markdown.
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowTreePicker(false)}
+                                        className="text-xs text-slate-500 hover:text-slate-800 font-medium px-2.5 py-1 rounded-lg hover:bg-slate-200/60 transition cursor-pointer"
+                                    >
+                                        Hide Tree
+                                    </button>
+                                </div>
+                                <RepoTreePicker
+                                    tree={treeData}
+                                    selectedPaths={selectedPaths}
+                                    onSelectionChange={setSelectedPaths}
+                                    readOnly={false}
+                                />
+                            </div>
+                        )}
 
                         {/* Collapsible Advanced Filtering Options (Branch, Monorepo Subfolder, Ignore Tests) */}
                         <div className="pt-1">
@@ -659,6 +761,7 @@ export default function Dashboard() {
                                 const isReady = link.status === 'ready' && !isExpired;
                                 const isProcessing = link.status === 'processing';
                                 const isFailed = link.status === 'failed';
+                                const isRateLimited = link.status === 'rate_limited';
 
                                 const daysLeft = link.expires_at ? Math.max(0, Math.ceil((new Date(link.expires_at) - new Date()) / (1000 * 60 * 60 * 24))) : 7;
                                 const rawUrl = typeof window !== 'undefined' ? `${window.location.origin}/api/links/${link.slug}?raw=true` : `/api/links/${link.slug}?raw=true`;
@@ -696,15 +799,17 @@ export default function Dashboard() {
                                             <span className={`px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 ${
                                                 isReady ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
                                                 isProcessing ? 'bg-amber-50 text-amber-700 border border-amber-200 animate-pulse' :
+                                                isRateLimited ? 'bg-amber-50 text-amber-800 border border-amber-300' :
                                                 isFailed ? 'bg-rose-50 text-rose-700 border border-rose-200' :
                                                 'bg-slate-100 text-slate-600 border border-slate-200'
                                             }`}>
                                                 <span className={`w-1.5 h-1.5 rounded-full ${
                                                     isReady ? 'bg-emerald-500' :
                                                     isProcessing ? 'bg-amber-500' :
+                                                    isRateLimited ? 'bg-amber-600' :
                                                     isFailed ? 'bg-rose-500' : 'bg-slate-400'
                                                 }`}></span>
-                                                <span>{isReady ? 'Ready for AI' : isProcessing ? 'Converting...' : isFailed ? 'Failed' : 'Expired'}</span>
+                                                <span>{isReady ? 'Ready for AI' : isProcessing ? 'Converting...' : isRateLimited ? 'Rate-Limited' : isFailed ? 'Failed' : 'Expired'}</span>
                                             </span>
                                         </div>
 
@@ -821,7 +926,7 @@ export default function Dashboard() {
 
                                         {/* Action Buttons Row */}
                                         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
-                                            {isReady && (
+                                            {(isReady || (isRateLimited && (link.gist_url || link.file_count > 0))) && (
                                                 <>
                                                     <a
                                                         href={readerUrl}
@@ -875,10 +980,49 @@ export default function Dashboard() {
                                                 </>
                                             )}
 
+                                            {isRateLimited && (
+                                                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between w-full text-xs text-amber-900 bg-amber-50/90 p-3 rounded-xl border border-amber-200 gap-2 my-1">
+                                                    <div className="flex items-center gap-2">
+                                                        <svg className="w-4 h-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                                        </svg>
+                                                        <span>{link.last_error || 'GitHub rate limit reached. Your conversion is paused and safe to retry.'}</span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <button
+                                                            onClick={() => handleRefreshClick(link.slug, link.repo_name)}
+                                                            disabled={refreshing === link.slug}
+                                                            className="bg-amber-600 hover:bg-amber-700 text-white px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer shadow-2xs whitespace-nowrap"
+                                                        >
+                                                            {refreshing === link.slug ? 'Retrying...' : 'Retry Now'}
+                                                        </button>
+                                                        {!link.gist_url && !link.file_count && (
+                                                            <button
+                                                                onClick={() => handleDeleteClick(link.slug, link.repo_name)}
+                                                                className="bg-white hover:bg-rose-50 text-rose-600 border border-slate-200 px-2.5 py-1 rounded-lg text-xs cursor-pointer shadow-2xs"
+                                                            >
+                                                                Delete
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+
                                             {isProcessing && (
-                                                <div className="flex items-center gap-2.5 text-amber-700 text-xs py-1">
-                                                    <span className="w-3 h-3 border-2 border-amber-600 border-t-transparent rounded-full animate-spin"></span>
-                                                    <span>Converting repository... Refreshing automatically.</span>
+                                                <div className="w-full space-y-1.5 py-1">
+                                                    <div className="flex items-center justify-between text-xs text-amber-700">
+                                                        <span className="flex items-center gap-2 font-medium">
+                                                            <span className="w-3 h-3 border-2 border-amber-600 border-t-transparent rounded-full animate-spin"></span>
+                                                            <span>Processing in resumable steps... Auto-advancing</span>
+                                                        </span>
+                                                        <span className="font-mono text-amber-800 font-semibold">{link.progress || 15}%</span>
+                                                    </div>
+                                                    <div className="w-full bg-amber-100 h-1.5 rounded-full overflow-hidden">
+                                                        <div 
+                                                            className="bg-amber-600 h-full transition-all duration-300 rounded-full"
+                                                            style={{ width: `${Math.max(5, link.progress || 15)}%` }}
+                                                        ></div>
+                                                    </div>
                                                 </div>
                                             )}
 

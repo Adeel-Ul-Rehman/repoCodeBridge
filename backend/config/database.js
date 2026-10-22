@@ -2,7 +2,7 @@ import 'dotenv/config';
 import pg from 'pg';
 const { Pool } = pg;
 
-let pool = null;
+let pool = global.pgPool || null;
 
 function getPool() {
     if (!pool) {
@@ -13,7 +13,7 @@ function getPool() {
         pool = new Pool({
             connectionString: process.env.DATABASE_URL,
             ssl: isLocal ? false : { rejectUnauthorized: false },
-            max: 10,
+            max: process.env.VERCEL ? 3 : 10,
             idleTimeoutMillis: 30000,
             connectionTimeoutMillis: 5000,
         });
@@ -22,6 +22,8 @@ function getPool() {
         pool.on('error', (err) => {
             console.error('Unexpected database client error on idle client:', err.message);
         });
+
+        global.pgPool = pool;
     }
     return pool;
 }

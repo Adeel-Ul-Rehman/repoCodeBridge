@@ -1,9 +1,13 @@
-// pages/api/links/[slug]/refresh.js
 import Link from '../../../../backend/models/Link.js';
+import Job from '../../../../backend/models/Job.js';
 import { authenticate } from '../../../../backend/middleware/auth.js';
-import { fetchRepository, invalidateRepoCache } from '../../../../backend/services/repoFetcher.js';
-import { formatToMarkdown } from '../../../../backend/services/codeFormatter.js';
-import { uploadToSupabase } from '../../../../utils/supabaseStorage.js';
+import { invalidateRepoCache } from '../../../../backend/services/repoFetcher.js';
+import { runConversionJob, advanceJobUntilTimeout } from '../../../../backend/services/jobManager.js';
+import { sanitizeLog } from '../../../../backend/services/rateLimitHandler.js';
+
+export const config = {
+    maxDuration: 60,
+};
 
 export default async function handler(req, res) {
     const slug = req.query?.slug || req.params?.slug;
@@ -62,60 +66,62 @@ export default async function handler(req, res) {
         // Targeted cache invalidation only for this repository
         invalidateRepoCache(link.repo_url);
         
-        // Process refresh in background
-        refreshLinkInBackground(link.id, link.repo_url, link.repo_name, slug);
+        // Preserve applicable branch or subpath if present in repo_name
+        const options = {};
+        const branchMatch = link.repo_name.match(/\(@([^)]+)\)/);
+        if (branchMatch) options.branch = branchMatch[1].trim();
+        const subpathMatch = link.repo_name.match(/\[\/([^\]]+)\]/);
+        if (subpathMatch) options.subpath = subpathMatch[1].trim();
+
+        const { selectedPaths } = req.body || {};
+        if (selectedPaths && Array.isArray(selectedPaths)) {
+            options.selectedPaths = selectedPaths;
+        } else if (link.selected_paths) {
+            try {
+                options.selectedPaths = typeof link.selected_paths === 'string' ? JSON.parse(link.selected_paths) : link.selected_paths;
+            } catch {}
+        }
+
+        // Create durable refresh job
+        const canonicalRepo = link.canonical_repo || Link.canonicalizeRepo(link.repo_url, options.branch, options.subpath);
+        const { job } = await Job.create({
+            userId: req.user.id,
+            linkId: link.id,
+            canonicalRepo,
+            repoUrl: link.repo_url,
+            repoName: link.repo_name,
+            branch: options.branch,
+            subpath: options.subpath,
+            selectedPaths: options.selectedPaths,
+            options,
+            jobType: 'refresh',
+        });
+
+        // Advance steps in serverless execution
+        const stepPromise = advanceJobUntilTimeout(job.id, 'refresh-worker', 8000);
+        if (typeof res.waitUntil === 'function') {
+            res.waitUntil(stepPromise);
+        } else if (typeof globalThis.waitUntil === 'function') {
+            globalThis.waitUntil(stepPromise);
+        }
+
+        // Allow up to 2.5s for fast/up-to-date checks to resolve immediately
+        await Promise.race([stepPromise, new Promise(r => setTimeout(r, 2500))]);
+        const latestJob = await Job.findById(job.id);
+        const isReady = latestJob?.status === 'completed';
         
-        res.status(202).json({
+        res.status(isReady ? 200 : 202).json({
             success: true,
-            message: 'Refresh started. The link will be updated with latest changes.',
+            jobId: job.id,
+            status: isReady ? 'ready' : (latestJob?.status || 'processing'),
+            progress: latestJob?.progress || 10,
+            message: isReady ? 'Repository is already up to date.' : 'Refresh started. The link will be updated with latest changes.',
         });
         
     } catch (error) {
-        console.error('Refresh error:', error);
+        console.error(sanitizeLog(`Refresh error: ${error.message}`));
         if (!res.headersSent) {
             res.status(500).json({ error: 'Failed to refresh repository' });
         }
-    }
-}
-
-async function refreshLinkInBackground(linkId, repoUrl, repoName, slug) {
-    const startedAt = new Date();
-    try {
-        console.log(`🔄 Refreshing link ${linkId} for ${repoName}`);
-        
-        // Preserve applicable branch or subpath if present in repo_name
-        const options = {};
-        const branchMatch = repoName.match(/\(@([^)]+)\)/);
-        if (branchMatch) options.branch = branchMatch[1].trim();
-        const subpathMatch = repoName.match(/\[\/([^\]]+)\]/);
-        if (subpathMatch) options.subpath = subpathMatch[1].trim();
-        
-        // Correct argument placement: 1: url, 2: options, 3: forceRefresh=true
-        const repoData = await fetchRepository(repoUrl, options, true);
-        console.log(`   Fetched ${repoData.repoInfo.totalFiles} files (fresh from GitHub)`);
-        
-        const markdownContent = formatToMarkdown(repoData);
-        console.log(`   Generated ${markdownContent.length} chars`);
-        
-        // Upload to Supabase (overwrite existing)
-        const result = await uploadToSupabase(slug, markdownContent);
-        console.log(`   ✅ Uploaded to Supabase: ${result.publicUrl}`);
-        
-        await Link.updateWithData(linkId, {
-            size: repoData.repoInfo.totalSizeKB * 1024,
-            fileCount: repoData.repoInfo.totalFiles,
-            gistId: linkId,
-            gistUrl: result.publicUrl,
-            b2Key: result.key,
-        }, startedAt);
-        
-        console.log(`✅ Link ${linkId} refreshed successfully`);
-        console.log(`   File count: ${repoData.repoInfo.totalFiles} files`);
-        console.log(`   🤖 AI-READABLE URL: ${result.publicUrl}`);
-        
-    } catch (error) {
-        console.error(`❌ Failed to refresh link ${linkId}:`, error.message);
-        // Preserve existing gist_url so user code remains readable if refresh fails
-        await Link.markRefreshFailed(linkId, error.message || 'Failed to refresh repository');
     }
 }

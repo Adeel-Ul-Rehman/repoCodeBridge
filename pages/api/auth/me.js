@@ -35,7 +35,7 @@ export default async function handler(req, res) {
             user: {
                 id: req.user.id,
                 email: req.user.email,
-                is_premium: Boolean(req.user.is_premium),
+                is_premium: false,
                 created_at: req.user.created_at,
                 last_login: req.user.last_login,
             },

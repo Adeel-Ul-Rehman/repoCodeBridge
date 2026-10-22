@@ -1,6 +1,7 @@
-// backend/services/repoFetcher.js
+import crypto from 'crypto';
 import { Octokit } from '@octokit/rest';
 import JSZip from 'jszip';
+import { withRateLimitRetry, calculateBackoffDelay, sanitizeLog, deduplicateRequest, RateLimitExceededError } from './rateLimitHandler.js';
 
 const octokit = new Octokit({
     auth: process.env.GITHUB_TOKEN || undefined,
@@ -9,8 +10,20 @@ const octokit = new Octokit({
 
 // Cache for repository data to avoid unnecessary re-fetches
 const repoCache = new Map();
+const treeCache = new Map();
 const CACHE_TTL = 3600000; // 1 hour
+const TREE_CACHE_TTL = 3600000; // 1 hour
 const MAX_CACHE_ENTRIES = 100; // Maximum cached repositories to prevent uncontrolled memory growth
+
+/**
+ * Computes standard Git blob SHA-1 hash for a content buffer or string.
+ * This matches GitHub's Git Trees API blob SHA exactly.
+ */
+export function computeGitBlobSha(content) {
+    const buf = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf-8');
+    const header = Buffer.from(`blob ${buf.length}\0`);
+    return crypto.createHash('sha1').update(Buffer.concat([header, buf])).digest('hex');
+}
 
 // Directories that should always be excluded from AI conversion
 const IGNORED_DIRECTORIES = new Set([
@@ -127,7 +140,10 @@ export function parseGitHubUrl(url) {
 
 // Get repository information from GitHub API
 export async function getRepoInfo(owner, repo) {
-    const response = await octokit.rest.repos.get({ owner, repo });
+    const response = await withRateLimitRetry(
+        () => octokit.rest.repos.get({ owner, repo }),
+        { stage: 'GET_REPO_INFO' }
+    );
     return {
         name: response.data.name,
         fullName: response.data.full_name,
@@ -170,7 +186,10 @@ export async function validateRepository(githubUrl) {
         
         let repoData;
         try {
-            const response = await octokit.rest.repos.get({ owner, repo });
+            const response = await withRateLimitRetry(
+                () => octokit.rest.repos.get({ owner, repo }),
+                { stage: 'VALIDATE_REPO', maxRetries: 1 }
+            );
             repoData = response.data;
         } catch (err) {
             if (err.status === 404) {
@@ -251,6 +270,18 @@ export function isPathIncludable(filepath, options = {}) {
     const segments = normalized.split('/');
     const filename = segments[segments.length - 1];
 
+    // Selective repository conversion filtering
+    if (options.selectedPaths && Array.isArray(options.selectedPaths) && options.selectedPaths.length > 0) {
+        const isSelected = options.selectedPaths.some(p => {
+            if (!p || typeof p !== 'string') return false;
+            const cleanP = p.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+            return normalized === cleanP || normalized.startsWith(cleanP + '/');
+        });
+        if (!isSelected) {
+            return false;
+        }
+    }
+
     // Monorepo subfolder filtering (e.g. packages/client or backend)
     if (options.subpath && options.subpath.trim()) {
         const cleanSubpath = options.subpath.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
@@ -297,6 +328,54 @@ export function isPathIncludable(filepath, options = {}) {
 }
 
 /**
+ * Validates client-provided selected paths against repository safety rules
+ * and the actual fetched repository tree.
+ */
+export function validateSelectedPaths(selectedPaths, validTreePaths = null) {
+    if (!selectedPaths) return [];
+    if (!Array.isArray(selectedPaths)) {
+        throw new Error('selectedPaths must be an array of paths');
+    }
+    const validated = [];
+    const validSet = validTreePaths ? (validTreePaths instanceof Set ? validTreePaths : new Set(validTreePaths)) : null;
+
+    for (const raw of selectedPaths) {
+        if (typeof raw !== 'string') continue;
+        const normalized = raw.replace(/\\/g, '/').trim();
+        if (!normalized) continue;
+
+        // Security check: prohibit directory traversal and absolute paths
+        if (normalized.startsWith('/') || /^[a-zA-Z]:/.test(normalized) || normalized.includes('..') || normalized.includes('\0')) {
+            throw new Error(`Invalid path: "${raw}" contains forbidden directory traversal or absolute path.`);
+        }
+
+        const clean = normalized.replace(/^\/+/, '').replace(/\/+$/, '');
+        
+        // If repository tree paths are provided for verification
+        if (validSet && validSet.size > 0) {
+            let exists = validSet.has(clean);
+            if (!exists) {
+                // Check if it's a directory containing files in the tree
+                for (const item of validSet) {
+                    if (item.startsWith(clean + '/')) {
+                        exists = true;
+                        break;
+                    }
+                }
+            }
+            if (!exists) {
+                throw new Error(`Invalid path: "${clean}" does not exist in the repository tree.`);
+            }
+        }
+
+        validated.push(clean);
+    }
+
+    return validated;
+}
+
+
+/**
  * High-Speed Repository Fetching via GitHub Zipball Stream
  * Downloads and parses repository in 1-2 seconds with zero rate limit consumption.
  */
@@ -319,7 +398,15 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
 
     for (const url of candidateUrls) {
         try {
-            const res = await fetch(url, { headers });
+            let res = await fetch(url, { headers });
+            if (res.status === 403 || res.status === 429) {
+                const backoff = calculateBackoffDelay(res.headers, 0, 15000);
+                if (backoff.shouldRetry) {
+                    console.log(sanitizeLog(`[RepoFetcher:Zipball] Rate limit encountered (${res.status}). Waiting ${backoff.waitMs}ms before candidate retry...`));
+                    await new Promise(r => setTimeout(r, backoff.waitMs));
+                    res = await fetch(url, { headers });
+                }
+            }
             if (res.ok) {
                 response = res;
                 successfulUrl = url;
@@ -334,7 +421,7 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
         throw new Error(`Zipball download failed for branch/tag "${branch}"`);
     }
 
-    console.log(`[RepoFetcher] Streaming zipball from: ${successfulUrl}`);
+    console.log(sanitizeLog(`[RepoFetcher] Streaming zipball from: ${successfulUrl}`));
     const arrayBuffer = await response.arrayBuffer();
     
     // Bound archive download size (150 MB)
@@ -397,6 +484,7 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
                 path: relativePath,
                 name: relativePath.split('/').pop(),
                 size: zipEntry._data?.uncompressedSize || content.length,
+                sha: computeGitBlobSha(content),
                 content: content,
                 isTruncated,
             });
@@ -412,14 +500,17 @@ async function fetchViaZipball(owner, repo, branch, options = {}) {
  * Fallback Fetching using Git Trees API (Single recursive tree call)
  */
 async function fetchViaGitTree(owner, repo, branch, options = {}) {
-    console.log(`[RepoFetcher] Using Git Trees API fallback for ${owner}/${repo}@${branch}`);
+    console.log(sanitizeLog(`[RepoFetcher] Using Git Trees API fallback for ${owner}/${repo}@${branch}`));
     
-    const treeRes = await octokit.rest.git.getTree({
-        owner,
-        repo,
-        tree_sha: branch,
-        recursive: 'true',
-    });
+    const treeRes = await withRateLimitRetry(
+        () => octokit.rest.git.getTree({
+            owner,
+            repo,
+            tree_sha: branch,
+            recursive: 'true',
+        }),
+        { stage: 'GET_GIT_TREE' }
+    );
 
     if (!treeRes.data || !treeRes.data.tree) {
         throw new Error('Failed to retrieve git tree');
@@ -431,11 +522,11 @@ async function fetchViaGitTree(owner, repo, branch, options = {}) {
 
     const MAX_CANDIDATE_FILES = 5000;
     if (candidateFiles.length > MAX_CANDIDATE_FILES) {
-        console.warn(`[RepoFetcher] Capping candidate files at ${MAX_CANDIDATE_FILES} (found ${candidateFiles.length})`);
+        console.warn(sanitizeLog(`[RepoFetcher] Capping candidate files at ${MAX_CANDIDATE_FILES} (found ${candidateFiles.length})`));
         candidateFiles = candidateFiles.slice(0, MAX_CANDIDATE_FILES);
     }
 
-    console.log(`   Found ${candidateFiles.length} candidate files after filtering`);
+    console.log(sanitizeLog(`   Found ${candidateFiles.length} candidate files after filtering`));
 
     // Fetch files in concurrency batches of 10
     const files = [];
@@ -446,11 +537,14 @@ async function fetchViaGitTree(owner, repo, branch, options = {}) {
         const results = await Promise.all(
             batch.map(async (fileItem) => {
                 try {
-                    const blobRes = await octokit.rest.git.getBlob({
-                        owner,
-                        repo,
-                        file_sha: fileItem.sha,
-                    });
+                    const blobRes = await withRateLimitRetry(
+                        () => octokit.rest.git.getBlob({
+                            owner,
+                            repo,
+                            file_sha: fileItem.sha,
+                        }),
+                        { stage: 'GET_BLOB', maxRetries: 2, maxWaitMs: 10000 }
+                    );
                     let content = Buffer.from(blobRes.data.content, 'base64').toString('utf-8');
                     
                     // Skip binary content that contains null bytes
@@ -468,11 +562,12 @@ async function fetchViaGitTree(owner, repo, branch, options = {}) {
                         path: fileItem.path,
                         name: fileItem.path.split('/').pop(),
                         size: fileItem.size || content.length,
+                        sha: fileItem.sha,
                         content,
                         isTruncated,
                     };
                 } catch (err) {
-                    console.warn(`Failed to fetch blob for ${fileItem.path}:`, err.message);
+                    console.warn(sanitizeLog(`Failed to fetch blob for ${fileItem.path}: ${err.message}`));
                     return null;
                 }
             })
@@ -484,6 +579,43 @@ async function fetchViaGitTree(owner, repo, branch, options = {}) {
     }
 
     return files;
+}
+
+/**
+ * Fetches an individual file blob via GitHub Git Data API with rate-limit handling and size caps
+ */
+export async function fetchSingleFileBlob(owner, repo, fileSha, filePath) {
+    const octokit = getOctokit();
+    const blobRes = await withRateLimitRetry(
+        () => octokit.rest.git.getBlob({
+            owner,
+            repo,
+            file_sha: fileSha,
+        }),
+        { stage: 'GET_BLOB', maxRetries: 2, maxWaitMs: 10000 }
+    );
+    let content = Buffer.from(blobRes.data.content, 'base64').toString('utf-8');
+    
+    // Skip binary content that contains null bytes
+    if (content.slice(0, 8192).includes('\0')) {
+        return null;
+    }
+
+    let isTruncated = false;
+    if (content.length > MAX_FILE_SIZE_BYTES) {
+        content = content.slice(0, MAX_FILE_SIZE_BYTES) + 
+            `\n\n// [... Content truncated: File exceeded ${Math.round(MAX_FILE_SIZE_BYTES / 1024)} KB limit ...]`;
+        isTruncated = true;
+    }
+
+    return {
+        path: filePath,
+        name: filePath.split('/').pop(),
+        size: content.length,
+        sha: fileSha,
+        content,
+        isTruncated,
+    };
 }
 
 /**
@@ -571,6 +703,11 @@ export function invalidateRepoCache(githubUrl) {
                 repoCache.delete(key);
             }
         }
+        for (const key of treeCache.keys()) {
+            if (key.startsWith(cleanUrl) || cleanUrl.includes(key.split('@')[0])) {
+                treeCache.delete(key);
+            }
+        }
         console.log(`[RepoFetcher] Targeted cache invalidation for: ${cleanUrl}`);
     } catch {
         // Safe fallback
@@ -579,5 +716,207 @@ export function invalidateRepoCache(githubUrl) {
 
 export function clearRepoCache() {
     repoCache.clear();
-    console.log('🗑️ Repository cache cleared');
+    treeCache.clear();
+    console.log('🗑️ Repository and tree cache cleared');
+}
+
+/**
+ * Fetch repository tree metadata before downloading source contents.
+ * Includes Git Trees API fallback for truncated responses and memory caching.
+ */
+export async function fetchRepoTree(owner, repo, branch = 'main', options = {}) {
+    const cacheKey = `${owner.toLowerCase()}/${repo.toLowerCase()}@${branch}`;
+    
+    return deduplicateRequest(`tree::${cacheKey}`, async () => {
+        if (!options.forceRefresh && treeCache.has(cacheKey)) {
+            const cached = treeCache.get(cacheKey);
+            if (Date.now() - cached.timestamp < TREE_CACHE_TTL) {
+                console.log(`[RepoFetcher] Serving cached tree for ${cacheKey}`);
+                return cached.data;
+            }
+            treeCache.delete(cacheKey);
+        }
+
+        console.log(sanitizeLog(`[RepoFetcher] Fetching Git tree for ${owner}/${repo}@${branch}`));
+        
+        let treeRes;
+        try {
+            treeRes = await withRateLimitRetry(
+                () => octokit.rest.git.getTree({
+                    owner,
+                    repo,
+                    tree_sha: branch,
+                    recursive: 'true',
+                }),
+                { stage: 'FETCH_TREE', maxRetries: 2 }
+            );
+        } catch (treeErr) {
+            // If branch name fails with 404/409, try resolving default branch commit SHA first
+            if (treeErr.status === 404 || treeErr.status === 409) {
+                const branchRes = await withRateLimitRetry(
+                    () => octokit.rest.repos.getBranch({ owner, repo, branch }),
+                    { stage: 'GET_BRANCH', maxRetries: 1 }
+                );
+                const commitSha = branchRes.data.commit.sha;
+                treeRes = await withRateLimitRetry(
+                    () => octokit.rest.git.getTree({
+                        owner,
+                        repo,
+                        tree_sha: commitSha,
+                        recursive: 'true',
+                    }),
+                    { stage: 'FETCH_TREE_RECURSIVE', maxRetries: 2 }
+                );
+            } else {
+                throw treeErr;
+            }
+        }
+
+        let rawTree = treeRes.data?.tree || [];
+        const isTruncated = Boolean(treeRes.data?.truncated);
+
+        // Bounded fallback: if tree is truncated by GitHub API (>100k objects or 7MB)
+        if (isTruncated) {
+            console.warn(sanitizeLog(`[RepoFetcher] Git Trees API returned truncated tree for ${owner}/${repo}. Running bounded fallback...`));
+            const subtrees = rawTree.filter(t => t.type === 'tree').slice(0, 25);
+            for (const sub of subtrees) {
+                try {
+                    const subRes = await withRateLimitRetry(
+                        () => octokit.rest.git.getTree({
+                            owner,
+                            repo,
+                            tree_sha: sub.sha,
+                            recursive: 'true',
+                        }),
+                        { stage: 'FETCH_SUBTREE', maxRetries: 1, maxWaitMs: 5000 }
+                    );
+                    if (subRes.data?.tree) {
+                        for (const child of subRes.data.tree) {
+                            rawTree.push({
+                                ...child,
+                                path: `${sub.path}/${child.path}`,
+                            });
+                        }
+                    }
+                } catch {
+                    // Non-fatal fallback continuation
+                }
+            }
+        }
+
+        // Format and annotate tree items
+        const formattedItems = [];
+        const seenPaths = new Set();
+
+        for (const item of rawTree) {
+            if (!item.path || seenPaths.has(item.path)) continue;
+            seenPaths.add(item.path);
+
+            const isDir = item.type === 'tree';
+            const includable = isDir ? true : isPathIncludable(item.path, options);
+
+            formattedItems.push({
+                path: item.path,
+                name: item.path.split('/').pop(),
+                type: isDir ? 'tree' : 'blob',
+                size: item.size || 0,
+                sha: item.sha,
+                isIncludable: includable,
+            });
+        }
+
+        // Sort deterministically: alphabetical by path
+        formattedItems.sort((a, b) => a.path.localeCompare(b.path));
+
+        const result = {
+            owner,
+            repo,
+            branch,
+            treeSha: treeRes.data?.sha,
+            isTruncated,
+            totalItems: formattedItems.length,
+            tree: formattedItems,
+            fetchedAt: new Date().toISOString(),
+        };
+
+        treeCache.set(cacheKey, {
+            data: result,
+            timestamp: Date.now(),
+        });
+
+        return result;
+    });
+}
+
+/**
+ * Computes difference between previous stored snapshot and latest tree.
+ * Determines added, modified, unchanged, and deleted files using Git blob SHAs.
+ */
+export function computeTreeDiff(oldSnapshotInput = [], newTreeFiles = [], selectedPaths = null) {
+    const oldSnapshotFiles = Array.isArray(oldSnapshotInput) 
+        ? oldSnapshotInput 
+        : (oldSnapshotInput && Array.isArray(oldSnapshotInput.files) ? oldSnapshotInput.files : []);
+
+    const oldMap = new Map();
+    for (const file of oldSnapshotFiles) {
+        if (file && file.path) {
+            oldMap.set(file.path, file);
+        }
+    }
+
+    const newMap = new Map();
+    for (const item of newTreeFiles) {
+        const isBlob = item.type ? item.type === 'blob' : true;
+        const isIncludable = item.isIncludable !== undefined ? item.isIncludable : true;
+        if (isBlob && isIncludable) {
+            if (selectedPaths && selectedPaths.length > 0) {
+                const isSelected = selectedPaths.some(p => {
+                    const cleanP = p.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+                    return item.path === cleanP || item.path.startsWith(cleanP + '/');
+                });
+                if (!isSelected) continue;
+            }
+            newMap.set(item.path, item);
+        }
+    }
+
+    const added = [];
+    const modified = [];
+    const unchanged = [];
+    const deleted = [];
+
+    // Check each file in the new candidate tree
+    for (const [path, newItem] of newMap.entries()) {
+        if (!oldMap.has(path)) {
+            added.push(newItem);
+        } else {
+            const oldFile = oldMap.get(path);
+            if (oldFile.sha && newItem.sha && oldFile.sha === newItem.sha) {
+                unchanged.push({
+                    ...newItem,
+                    content: oldFile.content,
+                    isTruncated: oldFile.isTruncated || false,
+                });
+            } else {
+                modified.push(newItem);
+            }
+        }
+    }
+
+    // Check files in the old snapshot that are no longer in new candidate map
+    for (const [path] of oldMap.entries()) {
+        if (!newMap.has(path)) {
+            deleted.push(path);
+        }
+    }
+
+    const isUpToDate = added.length === 0 && modified.length === 0 && deleted.length === 0;
+
+    return {
+        added,
+        modified,
+        unchanged,
+        deleted,
+        isUpToDate,
+    };
 }

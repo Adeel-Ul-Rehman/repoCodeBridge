@@ -61,18 +61,26 @@ app.prepare().then(async () => {
         res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
     
+    // Rate limiters
+    const { authLimiter, createLinkLimiter, apiLimiter } = await import('./backend/middleware/rateLimit.js');
+    server.use('/api/', apiLimiter);
+
     // Import API routes
     const loginHandler = (await import('./pages/api/auth/login.js')).default;
     const registerHandler = (await import('./pages/api/auth/register.js')).default;
     const meHandler = (await import('./pages/api/auth/me.js')).default;
     const logoutHandler = (await import('./pages/api/auth/logout.js')).default;
+    const forgotPasswordHandler = (await import('./pages/api/auth/forgot-password.js')).default;
+    const resetPasswordHandler = (await import('./pages/api/auth/reset-password.js')).default;
     const createLinkHandler = (await import('./pages/api/links/create.js')).default;
     const getLinksHandler = (await import('./pages/api/links/index.js')).default;
     const getLinkHandler = (await import('./pages/api/links/[slug].js')).default;
     
-    // Auth routes
-    server.post('/api/auth/login', loginHandler);
-    server.post('/api/auth/register', registerHandler);
+    // Auth routes with rate limiting
+    server.post('/api/auth/login', authLimiter, loginHandler);
+    server.post('/api/auth/register', authLimiter, registerHandler);
+    server.post('/api/auth/forgot-password', authLimiter, forgotPasswordHandler);
+    server.post('/api/auth/reset-password', authLimiter, resetPasswordHandler);
     server.get('/api/auth/me', meHandler);
     server.post('/api/auth/logout', logoutHandler);
     
@@ -88,12 +96,16 @@ app.prepare().then(async () => {
     server.get('/api/auth/github/callback', githubCallbackHandler);
     
     const downloadZipHandler = (await import('./pages/api/links/[slug]/download-zip.js')).default;
+    const downloadHandler = (await import('./pages/api/links/[slug]/download.js')).default;
+    const deleteLegacyHandler = (await import('./pages/api/links/[slug]/delete.js')).default;
     const refreshHandler = (await import('./pages/api/links/[slug]/refresh.js')).default;
     
     // Links routes
-    server.post('/api/links/create', createLinkHandler);
+    server.post('/api/links/create', createLinkLimiter, createLinkHandler);
     server.get('/api/links', getLinksHandler);
     server.all('/api/links/:slug/download-zip', downloadZipHandler);
+    server.all('/api/links/:slug/download', downloadHandler);
+    server.all('/api/links/:slug/delete', deleteLegacyHandler);
     server.all('/api/links/:slug/refresh', refreshHandler);
     server.all('/api/links/:slug', getLinkHandler);
     
@@ -151,5 +163,23 @@ app.prepare().then(async () => {
         initKeepAliveEngine().catch((err) => {
             console.warn('[KeepAlive] Could not initialize keepalive scheduler:', err.message);
         });
+
+        // Automated watchdog to recover stuck conversion/refresh jobs (>5 minutes in 'processing')
+        const initStuckJobRecovery = async () => {
+            const RECOVERY_INTERVAL_MS = 2 * 60 * 1000;
+            const sweep = async () => {
+                try {
+                    const Link = (await import('./backend/models/Link.js')).default;
+                    await Link.recoverStuckJobs(5);
+                } catch (e) {
+                    // Safe error absorption
+                }
+            };
+            await sweep();
+            const timer = setInterval(sweep, RECOVERY_INTERVAL_MS);
+            if (timer.unref) timer.unref();
+        };
+
+        initStuckJobRecovery().catch(() => {});
     });
 });
