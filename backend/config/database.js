@@ -1,4 +1,4 @@
-// backend/config/database.js
+import 'dotenv/config';
 import pg from 'pg';
 const { Pool } = pg;
 
@@ -6,11 +6,13 @@ let pool = null;
 
 function getPool() {
     if (!pool) {
+        const isLocal = !process.env.DATABASE_URL || 
+            process.env.DATABASE_URL.includes('localhost') || 
+            process.env.DATABASE_URL.includes('127.0.0.1');
+            
         pool = new Pool({
             connectionString: process.env.DATABASE_URL,
-            ssl: process.env.NODE_ENV === 'production' 
-                ? { rejectUnauthorized: false } 
-                : false,
+            ssl: isLocal ? false : { rejectUnauthorized: false },
         });
     }
     return pool;

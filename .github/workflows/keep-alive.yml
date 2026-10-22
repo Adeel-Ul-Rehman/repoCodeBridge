@@ -1,0 +1,41 @@
+name: Keep Supabase Database Alive
+
+on:
+  schedule:
+    # Runs at 04:00 UTC every single day
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    # Allows manual trigger from GitHub Actions tab
+
+jobs:
+  ping-database:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Ping Supabase Database & Storage
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.SUPABASE_DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET || 'ai-readable-code' }}
+        run: node scripts/ping-supabase.js
+
+      - name: Ping Live Web Endpoint (Optional)
+        if: env.APP_URL != ''
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          echo "Pinging live endpoint: $APP_URL/api/cron/ping"
+          curl -f -s -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/ping" || echo "Live URL ping finished"

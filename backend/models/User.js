@@ -4,13 +4,13 @@ import { query } from '../config/database.js';
 import { v4 as uuidv4 } from 'uuid';
 
 class User {
-    static async create(email, passwordHash = null, isPremium = false) {
+    static async create(email, passwordHash = null) {
         const id = uuidv4();
         const result = await query(
             `INSERT INTO users (id, email, password_hash, is_premium, created_at)
-             VALUES ($1, $2, $3, $4, NOW())
-             RETURNING id, email, is_premium, created_at`,
-            [id, email.toLowerCase(), passwordHash, isPremium]
+             VALUES ($1, $2, $3, false, NOW())
+             RETURNING id, email, created_at`,
+            [id, email.toLowerCase(), passwordHash]
         );
         return result.rows[0];
     }
@@ -25,7 +25,7 @@ class User {
     
     static async findById(id) {
         const result = await query(
-            'SELECT id, email, is_premium, premium_expires_at, created_at, last_login FROM users WHERE id = $1',
+            'SELECT id, email, created_at, last_login FROM users WHERE id = $1',
             [id]
         );
         return result.rows[0] || null;
@@ -52,14 +52,13 @@ class User {
              WHERE user_id = $1 AND expires_at > NOW() AND status = 'ready'`,
             [userId]
         );
-        return parseInt(result.rows[0].count);
+        return parseInt(result.rows[0].count, 10);
     }
     
-    static async canCreateLink(userId, isPremium) {
-        if (isPremium) return true;
-        
+    // General free tool: generous active link allowance (up to 50 active links at once)
+    static async canCreateLink(userId) {
         const activeCount = await this.getActiveLinkCount(userId);
-        return activeCount < 5;
+        return activeCount < 50;
     }
 }
 

@@ -1,4 +1,4 @@
-// backend/middleware/auth.js - Update the authenticate function
+// backend/middleware/auth.js
 import jwt from 'jsonwebtoken';
 import { query } from '../config/database.js';
 
@@ -27,7 +27,7 @@ async function authenticate(req, res, next) {
     }
     
     const result = await query(
-        'SELECT id, email, is_premium, premium_expires_at, created_at, password_hash FROM users WHERE id = $1',
+        'SELECT id, email, created_at, password_hash FROM users WHERE id = $1',
         [decoded.userId]
     );
     
@@ -36,12 +36,6 @@ async function authenticate(req, res, next) {
     }
     
     const user = result.rows[0];
-    
-    // OAuth users (no password_hash) are still valid
-    // Premium check from env
-    const premiumEmails = (process.env.PREMIUM_USERS || '').split(',');
-    user.is_premium = user.is_premium || premiumEmails.includes(user.email);
-    
     req.user = user;
     req.userId = user.id;
     next();
@@ -59,7 +53,7 @@ async function optionalAuth(req, res, next) {
             const decoded = verifyToken(token);
             if (decoded) {
                 const result = await query(
-                    'SELECT id, email, is_premium FROM users WHERE id = $1',
+                    'SELECT id, email, created_at FROM users WHERE id = $1',
                     [decoded.userId]
                 );
                 if (result.rows.length > 0) {

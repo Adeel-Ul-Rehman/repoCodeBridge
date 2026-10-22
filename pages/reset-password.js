@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import Layout from '../components/Layout.js';
 import Link from 'next/link.js';
+import Head from 'next/head.js';
 import { useRouter } from 'next/router.js';
 
 export default function ResetPassword() {
@@ -23,7 +24,7 @@ export default function ResetPassword() {
         }
         
         if (newPassword.length < 6) {
-            setError('Password must be at least 6 characters');
+            setError('Password must be at least 6 characters long');
             return;
         }
         
@@ -41,15 +42,15 @@ export default function ResetPassword() {
             const data = await res.json();
             
             if (res.ok) {
-                setSuccess('Password reset successfully! Redirecting to login...');
+                setSuccess('Password reset successfully. Redirecting to login...');
                 setTimeout(() => {
                     router.push('/login');
-                }, 2000);
+                }, 1800);
             } else {
-                setError(data.error || 'Failed to reset password');
+                setError(data.error || 'Failed to reset password. Please check your OTP.');
             }
         } catch (err) {
-            setError('Something went wrong');
+            setError('Something went wrong. Please try again.');
         } finally {
             setLoading(false);
         }
@@ -57,83 +58,111 @@ export default function ResetPassword() {
     
     return (
         <Layout user={null} onLogout={() => {}}>
-            <div className="min-h-[calc(100vh-200px)] flex items-center justify-center">
-                <div className="bg-white rounded-xl shadow-lg p-8 w-full max-w-md">
-                    <h1 className="text-2xl font-bold text-center text-gray-800 mb-2">🔄 Reset Password</h1>
-                    <p className="text-center text-gray-500 text-sm mb-6">
-                        Enter the OTP sent to your email and your new password.
-                    </p>
+            <Head>
+                <title>Reset Password - RepoCodeBridge</title>
+                <meta name="description" content="Set a new password for your RepoCodeBridge account." />
+            </Head>
+            <div className="min-h-[calc(100vh-220px)] flex items-center justify-center py-10 px-4">
+                <div className="bg-white rounded-3xl p-8 sm:p-10 w-full max-w-md border border-slate-200/90 shadow-md relative overflow-hidden animate-fadeIn">
+                    <div className="text-center mb-7">
+                        <div className="w-12 h-12 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center mx-auto mb-3 shadow-2xs">
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                        </div>
+                        <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Reset Password</h1>
+                        <p className="text-slate-500 text-xs sm:text-sm mt-1">
+                            Enter the OTP verification code and choose a new password
+                        </p>
+                    </div>
                     
                     {error && (
-                        <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
-                            {error}
+                        <div className="mb-5 p-3.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl text-xs flex items-start gap-2.5 animate-fadeIn">
+                            <svg className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            <span className="flex-1 font-medium">{error}</span>
                         </div>
                     )}
                     
                     {success && (
-                        <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm">
-                            {success}
+                        <div className="mb-5 p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl text-xs flex items-start gap-2.5 animate-fadeIn">
+                            <svg className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" />
+                            </svg>
+                            <span className="flex-1 font-medium">{success}</span>
                         </div>
                     )}
                     
                     <form onSubmit={handleSubmit} className="space-y-4">
                         <div>
-                            <label className="block text-gray-700 text-sm font-medium mb-1">Email Address</label>
+                            <label className="block text-slate-700 text-xs font-semibold uppercase tracking-wider mb-1.5">Email Address</label>
                             <input
                                 type="email"
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition"
-                                placeholder="you@example.com"
+                                className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-100 focus:border-indigo-600 outline-none text-sm text-slate-900 transition placeholder:text-slate-400"
+                                placeholder="developer@example.com"
                                 required
                             />
                         </div>
                         
                         <div>
-                            <label className="block text-gray-700 text-sm font-medium mb-1">OTP Code</label>
+                            <label className="block text-slate-700 text-xs font-semibold uppercase tracking-wider mb-1.5">OTP Code</label>
                             <input
                                 type="text"
                                 value={otp}
                                 onChange={(e) => setOtp(e.target.value)}
-                                placeholder="Enter 6-digit code"
+                                placeholder="6-digit verification code"
                                 maxLength="6"
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition"
+                                className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-100 focus:border-indigo-600 outline-none text-sm text-slate-900 font-mono tracking-widest text-center transition placeholder:text-slate-400 placeholder:tracking-normal placeholder:font-sans"
                                 required
                             />
                         </div>
                         
                         <div>
-                            <label className="block text-gray-700 text-sm font-medium mb-1">New Password</label>
+                            <label className="block text-slate-700 text-xs font-semibold uppercase tracking-wider mb-1.5">New Password</label>
                             <input
                                 type="password"
                                 value={newPassword}
                                 onChange={(e) => setNewPassword(e.target.value)}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition"
-                                placeholder="••••••••"
+                                className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-100 focus:border-indigo-600 outline-none text-sm text-slate-900 transition placeholder:text-slate-400"
+                                placeholder="At least 6 characters"
                                 required
                             />
                         </div>
                         
                         <div>
-                            <label className="block text-gray-700 text-sm font-medium mb-1">Confirm Password</label>
+                            <label className="block text-slate-700 text-xs font-semibold uppercase tracking-wider mb-1.5">Confirm Password</label>
                             <input
                                 type="password"
                                 value={confirmPassword}
                                 onChange={(e) => setConfirmPassword(e.target.value)}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition"
-                                placeholder="••••••••"
+                                className="w-full px-4 py-2.5 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-100 focus:border-indigo-600 outline-none text-sm text-slate-900 transition placeholder:text-slate-400"
+                                placeholder="Re-enter password"
                                 required
                             />
                         </div>
                         
-                        <button type="submit" className="w-full bg-primary-600 hover:bg-primary-700 text-white py-2 rounded-lg font-medium transition disabled:opacity-50" disabled={loading}>
-                            {loading ? 'Resetting...' : 'Reset Password'}
+                        <button 
+                            type="submit" 
+                            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-sm py-2.5 rounded-xl transition shadow-xs flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60 mt-2" 
+                            disabled={loading}
+                        >
+                            {loading ? (
+                                <span className="flex items-center gap-2">
+                                    <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                                    <span>Resetting password...</span>
+                                </span>
+                            ) : (
+                                <span>Reset Password</span>
+                            )}
                         </button>
                     </form>
                     
-                    <p className="text-center text-gray-600 text-sm mt-6">
-                        <Link href="/login" className="text-primary-600 hover:text-primary-700 font-medium">
-                            Back to Login
+                    <p className="text-center text-slate-600 text-xs mt-6">
+                        <Link href="/login" className="text-indigo-600 hover:text-indigo-700 font-semibold underline">
+                            Back to Sign In
                         </Link>
                     </p>
                 </div>

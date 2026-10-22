@@ -16,11 +16,14 @@ class Link {
         const id = uuidv4();
         const slug = this.generateSlug();
         
+        // Strict 7 days validity for all links
+        const expiresAt = data.expiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        
         const result = await query(
             `INSERT INTO links (id, user_id, repo_url, repo_name, slug, expires_at, status, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, 'processing', NOW())
              RETURNING id, slug, repo_url, repo_name, expires_at, status`,
-            [id, data.userId, data.repoUrl, data.repoName, slug, data.expiresAt]
+            [id, data.userId, data.repoUrl, data.repoName, slug, expiresAt]
         );
         
         return result.rows[0];
@@ -40,7 +43,7 @@ class Link {
     static async findByUser(userId, includeExpired = false) {
         let sql = `SELECT * FROM links WHERE user_id = $1`;
         if (!includeExpired) {
-            sql += ` AND expires_at > NOW() AND status = 'ready'`;
+            sql += ` AND expires_at > NOW() AND status != 'expired'`;
         }
         sql += ` ORDER BY created_at DESC`;
         
@@ -94,29 +97,22 @@ class Link {
     
     static async getExpiredLinks() {
         const result = await query(
-            `SELECT * FROM links WHERE expires_at < NOW() AND status = 'ready'`
+            `SELECT * FROM links WHERE expires_at < NOW() AND status != 'expired'`
         );
         return result.rows;
     }
     
-    static async getUserLimits(userId, isPremium) {
-        if (isPremium) {
-            return {
-                maxLinks: null,
-                maxRepoSizeMB: 200,
-                expiryDays: 30,
-            };
-        }
-        
+    // General free tool limits for all users: 7 days validity, 150MB repository size
+    static async getUserLimits(userId) {
         const result = await query(
             `SELECT COUNT(*) FROM links WHERE user_id = $1 AND expires_at > NOW() AND status = 'ready'`,
             [userId]
         );
         
         return {
-            maxLinks: 5,
-            usedLinks: parseInt(result.rows[0].count),
-            maxRepoSizeMB: 100,
+            maxLinks: 50,
+            usedLinks: parseInt(result.rows[0]?.count || 0, 10),
+            maxRepoSizeMB: 150,
             expiryDays: 7,
         };
     }

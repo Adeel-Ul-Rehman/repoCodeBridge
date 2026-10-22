@@ -19,14 +19,13 @@ export default async function handler(req, res) {
     }
     
     try {
-        const limits = await Link.getUserLimits(req.user.id, req.user.is_premium);
+        const limits = await Link.getUserLimits(req.user.id);
         
         res.status(200).json({
             success: true,
             user: {
                 id: req.user.id,
                 email: req.user.email,
-                is_premium: req.user.is_premium,
                 created_at: req.user.created_at,
                 last_login: req.user.last_login,
             },

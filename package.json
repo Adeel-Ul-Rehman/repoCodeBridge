@@ -8,7 +8,8 @@
     "dev": "node server.js",
     "build": "next build",
     "start": "NODE_ENV=production node server.js",
-    "vercel-build": "next build"
+    "vercel-build": "next build",
+    "ping": "node scripts/ping-supabase.js"
   },
   "dependencies": {
     "@octokit/rest": "^20.1.1",

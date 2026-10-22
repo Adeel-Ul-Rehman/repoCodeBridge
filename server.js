@@ -74,10 +74,19 @@ app.prepare().then(async () => {
     server.get('/api/auth/github', githubHandler);
     server.get('/api/auth/github/callback', githubCallbackHandler);
     
+    const downloadZipHandler = (await import('./pages/api/links/[slug]/download-zip.js')).default;
+    const refreshHandler = (await import('./pages/api/links/[slug]/refresh.js')).default;
+    
     // Links routes
     server.post('/api/links/create', createLinkHandler);
     server.get('/api/links', getLinksHandler);
+    server.all('/api/links/:slug/download-zip', downloadZipHandler);
+    server.all('/api/links/:slug/refresh', refreshHandler);
     server.all('/api/links/:slug', getLinkHandler);
+    
+    // Supabase keep-alive ping route
+    const pingHandler = (await import('./pages/api/cron/ping.js')).default;
+    server.all('/api/cron/ping', pingHandler);
     
     // Next.js handles all other routes
     server.all('*', (req, res) => {
@@ -85,7 +94,49 @@ app.prepare().then(async () => {
     });
     
     const PORT = process.env.PORT || 3000;
-    server.listen(PORT, () => {
+    server.listen(PORT, async () => {
         console.log(`🚀 Server running on http://localhost:${PORT}`);
+        
+        // Automated daily Supabase keep-alive ping to prevent inactivity pausing
+        const initKeepAliveEngine = async () => {
+            const PING_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+            const RETRY_INTERVAL_MS = 5 * 60 * 1000;      // 5 minutes if failed
+
+            const runPing = async (source) => {
+                try {
+                    const { pingSupabase } = await import('./scripts/ping-supabase.js');
+                    const res = await pingSupabase(source);
+                    if (res.success) {
+                        console.log(`[KeepAlive] Supabase keep-alive ping successful (${source}) - Latency: ${res.latencyMs}ms`);
+                    } else {
+                        console.warn(`[KeepAlive] Ping reported warning (${source}):`, res.errors?.join(', '));
+                    }
+                    return res.success;
+                } catch (err) {
+                    console.error(`[KeepAlive] Ping error (${source}):`, err.message);
+                    return false;
+                }
+            };
+
+            // Run initial keep-alive ping on startup
+            const initialSuccess = await runPing('server-startup');
+            
+            // Recursive scheduling for bulletproof execution and error retry
+            const scheduleNext = (delayMs) => {
+                const timer = setTimeout(async () => {
+                    const ok = await runPing('server-daily');
+                    // If failed, retry in 5 minutes; otherwise wait 24 hours
+                    scheduleNext(ok ? PING_INTERVAL_MS : RETRY_INTERVAL_MS);
+                }, delayMs);
+                
+                if (timer.unref) timer.unref();
+            };
+
+            scheduleNext(initialSuccess ? PING_INTERVAL_MS : RETRY_INTERVAL_MS);
+        };
+
+        initKeepAliveEngine().catch((err) => {
+            console.warn('[KeepAlive] Could not initialize keepalive scheduler:', err.message);
+        });
     });
 });

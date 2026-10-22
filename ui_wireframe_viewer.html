@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UI Wireframe Viewer</title>
+<style>
+  body{margin:0;background:#dfe3ea;font-family:Arial,Helvetica,sans-serif;color:#111}
+  .bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 24px;background:#fff;border-bottom:1px solid #c5cbd6;position:sticky;top:0;z-index:5}
+  .bar strong{font-size:15px}
+  .hint{flex:1;min-width:220px;color:#555;font-size:13px}
+  .bar button{font:inherit;font-size:14px;padding:8px 16px;border:1px solid #1f2a5a;border-radius:6px;background:#fff;color:#1f2a5a;cursor:pointer}
+  .bar button.on,.bar button.go{background:#1f2a5a;color:#fff}
+  button:focus-visible{outline:2px solid #1f2a5a;outline-offset:2px}
+  .stage{padding:24px;overflow-x:auto}
+
+  /* ---------- the sheet (exported as PNG) ---------- */
+  #sheet{--pri:#1f2a5a;--acc:#2f6fed;--ok:#2e8b57;--warn:#d98e00;--bad:#c9302c;--soft:#eef1f7;--bd:#d5dae5;--cam:#26303f;--camtx:#fff;--tx:#1b1f27;--mut:#6b7385;
+    width:1280px;min-height:720px;margin:0 auto;background:#fff;color:var(--tx);font-size:13px;box-sizing:border-box;position:relative}
+  #sheet.wf{--pri:#555;--acc:#777;--ok:#888;--warn:#999;--bad:#444;--soft:#f1f1f1;--bd:#bdbdbd;--cam:#cfcfcf;--camtx:#333;--mut:#777}
+  .app{display:flex;min-height:720px}
+  aside{width:220px;background:var(--pri);color:#fff;padding:18px 0;flex-shrink:0}
+  .logo{font-weight:700;font-size:15px;padding:0 20px 18px;border-bottom:1px solid rgba(255,255,255,.2);margin-bottom:10px}
+  .ni{padding:10px 20px;font-size:13px;opacity:.8}
+  .ni.act{background:rgba(255,255,255,.18);opacity:1;font-weight:700;border-left:4px solid #fff;padding-left:16px}
+  main{flex:1;background:var(--soft);min-width:0}
+  .top{display:flex;justify-content:space-between;align-items:center;height:56px;padding:0 20px;background:#fff;border-bottom:1px solid var(--bd)}
+  .top h2{margin:0;font-size:18px}
+  .user{border:1px solid var(--bd);border-radius:20px;padding:6px 14px;font-size:12px}
+  .content{padding:18px 20px;display:flex;flex-direction:column;gap:16px}
+  .row{display:flex;gap:16px}
+  .row>div{min-width:0}
+  .card{background:#fff;border:1px solid var(--bd);border-radius:8px;padding:14px;box-sizing:border-box;height:100%}
+  .card h3{margin:0 0 12px;font-size:14px}
+  .hd{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+  .hd h3{margin:0}
+  .pill{border:1px solid var(--pri);color:var(--pri);border-radius:6px;padding:5px 12px;font-size:12px;font-weight:700}
+  .sl{color:var(--mut);font-size:12px}.sv{font-size:28px;font-weight:700;margin:4px 0}.ss{color:var(--mut);font-size:12px}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;background:var(--soft);font-size:12px;color:var(--mut)}
+  th,td{padding:9px 10px;border-bottom:1px solid var(--bd)}
+  .bd{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:12px;padding:2px 9px;font-size:11px;font-weight:700;background:#fff}
+  .br{display:flex;align-items:center;gap:10px;margin:12px 0}.br .n{width:120px}.br .tr{flex:1;background:var(--soft);height:16px;border-radius:4px}
+  .br .fl{height:100%;background:var(--acc);border-radius:4px}.br .v{width:20px;text-align:right;font-weight:700}
+  .grid{display:grid;gap:12px}
+  .cam{position:relative;border-radius:6px;overflow:hidden;color:var(--camtx);background:var(--cam) repeating-linear-gradient(45deg,rgba(255,255,255,.04) 0 10px,transparent 10px 20px)}
+  .cam.off{background:var(--soft);color:var(--mut);border:1px dashed var(--bd)}
+  .cam .ch{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;padding:6px 10px;font-size:11px;font-weight:700;background:rgba(0,0,0,.35);color:#fff}
+  .cam .oc{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:700}
+  .cam .snap{position:absolute;bottom:6px;left:8px;font-size:11px;background:rgba(0,0,0,.45);color:#fff;padding:2px 7px;border-radius:4px}
+  .tg{position:absolute;border:2px solid var(--c)}
+  .tg span{position:absolute;top:-19px;left:-2px;background:var(--c);color:#fff;font-size:10px;font-weight:700;padding:2px 6px;white-space:nowrap}
+  .fl2{margin-bottom:12px}.fl2 label{display:block;font-size:12px;color:var(--mut);margin-bottom:4px}
+  .inp{border:1px solid var(--bd);border-radius:6px;padding:9px 10px;color:#444;background:#fff}
+  .inp.sel:after{content:"▾";float:right}
+  .tg2{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--soft)}
+  .sw{width:36px;height:20px;border-radius:10px;background:var(--bd);position:relative}
+  .sw:after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff}
+  .sw.on{background:var(--ok)}.sw.on:after{left:18px}
+  .sld{display:flex;align-items:center;gap:10px}.sld .tr{flex:1;height:6px;background:var(--bd);border-radius:3px;position:relative}
+  .sld .fl{position:absolute;left:0;top:0;bottom:0;background:var(--acc);border-radius:3px}
+  .btns{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}.btns.col{flex-direction:column}
+  .btn{padding:9px 16px;border-radius:6px;font-weight:700;text-align:center;border:1px solid var(--pri);font-size:13px}
+  .btn.pri{background:var(--pri);color:#fff}.btn.sec{background:#fff;color:var(--pri)}.btn.bad{background:var(--bad);border-color:var(--bad);color:#fff}
+  .btn.full{width:100%;box-sizing:border-box}
+  .ai{display:flex;gap:10px;padding:10px;border:1px solid var(--bd);border-radius:6px;margin-bottom:8px}.ai.sel{background:var(--soft)}
+  .ai .dot{width:10px;height:10px;border-radius:50%;margin-top:4px;flex-shrink:0}.ai .m{color:var(--mut);font-size:11px;margin-top:2px}
+  .kv{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--soft)}.kv span:first-child{color:var(--mut)}
+  .tl{display:flex;margin-top:6px}.st{flex:1;text-align:center;position:relative}
+  .st:before{content:"";position:absolute;top:9px;left:-50%;right:50%;height:2px;background:var(--bd)}.st:first-child:before{display:none}
+  .st i{position:relative;display:block;width:20px;height:20px;border-radius:50%;background:var(--acc);margin:0 auto 8px}
+  .st.pend i{background:#fff;border:2px solid var(--bd);box-sizing:border-box}
+  .st b{display:block}.st small{color:var(--mut)}
+  .chat{display:flex;flex-direction:column;gap:12px;min-height:470px}
+  .msg{max-width:72%;padding:10px 14px;border-radius:12px;line-height:1.45}
+  .msg.user{align-self:flex-end;background:var(--pri);color:#fff}.msg.bot{align-self:flex-start;background:var(--soft)}
+  .clips{display:flex;gap:10px;margin-top:8px}.clip{background:#fff;border:1px solid var(--bd);border-radius:6px;overflow:hidden;width:150px;color:var(--tx)}
+  .clip .th{height:62px;background:var(--cam);color:var(--camtx);display:flex;align-items:center;justify-content:center;font-size:18px}
+  .clip div+div{padding:5px 8px;font-size:11px}
+  .ib{margin-top:auto;display:flex;gap:10px}.ib .inp{flex:1}
+  .chip{border:1px solid var(--bd);border-radius:16px;padding:8px 12px;margin-bottom:8px;background:var(--soft)}
+  .auth{display:flex;min-height:720px}.auth .brand{flex:1;background:var(--pri);color:#fff;padding:70px;display:flex;flex-direction:column;justify-content:center}
+  .brand h1{font-size:34px;margin:0 0 14px}.brand p{font-size:16px;opacity:.85;max-width:420px;line-height:1.5}
+  .auth .fc{width:520px;display:flex;align-items:center;justify-content:center;background:var(--soft)}
+  .auth .card{width:380px;height:auto;padding:28px}.auth h3{font-size:22px;margin:0 0 4px}.sub{color:var(--mut);margin-bottom:20px}
+  .lnk{text-align:center;color:var(--acc);margin-top:14px}.note{text-align:center;color:var(--mut);font-size:11px;margin-top:16px}
+</style>
+</head>
+<body>
+<div class="bar">
+  <strong id="progress">Connecting…</strong>
+  <span class="hint" id="hint">Download the PNG, then press Enter in the terminal for the next screen.</span>
+  <button id="mc" class="on" type="button">Color</button>
+  <button id="mw" type="button">Wireframe (gray)</button>
+  <button id="dl" class="go" type="button">Download PNG</button>
+</div>
+<div class="stage"><div id="sheet"></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script>
+let shown = -1, cur = null, mode = 'color';
+const E = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const tn = t => `var(--${t || 'acc'})`;
+const bdg = c => { const m = /^(ok|warn|bad|info)\|(.*)$/.exec(c); return m ? `<span class="bd" style="--c:${tn(m[1]==='info'?'acc':m[1])}">${E(m[2])}</span>` : E(c); };
+const btns = (b, col) => b && b.length ? `<div class="btns ${col?'col':''}">${b.map(x=>`<div class="btn ${x.tone||'pri'} ${x.full?'full':''}">${E(x.text)}</div>`).join('')}</div>` : '';
+const head = (t, btn) => `<div class="hd"><h3>${E(t||'')}</h3>${btn?`<span class="pill">${E(btn)}</span>`:''}</div>`;
+
+const B = {
+  stat: b => `<div class="card"><div class="sl">${E(b.label)}</div><div class="sv" style="color:${tn(b.tone)}">${E(b.value)}</div><div class="ss">${E(b.sub)}</div></div>`,
+  table: b => `<div class="card">${head(b.title,b.btn)}<table><tr>${b.cols.map(c=>`<th>${E(c)}</th>`).join('')}</tr>${b.rows.map(r=>`<tr>${r.map(c=>`<td>${bdg(c)}</td>`).join('')}</tr>`).join('')}</table></div>`,
+  bars: b => { const mx = Math.max(...b.data.map(d=>d[1])); return `<div class="card">${head(b.title)}${b.data.map(d=>`<div class="br"><span class="n">${E(d[0])}</span><div class="tr"><div class="fl" style="width:${d[1]/mx*100}%"></div></div><span class="v">${d[1]}</span></div>`).join('')}</div>`; },
+  cams: b => `<div class="card">${head(b.title)}<div class="grid" style="grid-template-columns:repeat(${b.cols||2},1fr)">${b.cams.map(c=>
+    `<div class="cam ${c.offline?'off':''}" style="height:${b.h||200}px"><div class="ch"><span>${E(c.name)}</span>${c.offline?'':'<span>● LIVE</span>'}</div>${c.offline?'<div class="oc">Camera offline</div>':''}${(c.tags||[]).map(t=>
+      `<div class="tg" style="--c:${tn(t.tone)};left:${t.box[0]}%;top:${t.box[1]}%;width:${t.box[2]}%;height:${t.box[3]}%"><span>${E(t.label)}</span></div>`).join('')}${c.snap?`<div class="snap">${E(c.snap)}</div>`:''}</div>`).join('')}</div></div>`,
+  form: b => `<div class="card">${head(b.title)}${b.fields.map(f => f.type==='toggle'
+      ? `<div class="tg2"><span>${E(f.label)}</span><span class="sw ${f.on?'on':''}"></span></div>`
+      : f.type==='slider'
+      ? `<div class="fl2"><label>${E(f.label)}</label><div class="sld"><div class="tr"><div class="fl" style="width:${f.value}%"></div></div><b>${E(f.text)}</b></div></div>`
+      : `<div class="fl2"><label>${E(f.label)}</label><div class="inp ${f.type==='select'?'sel':''}">${E(f.ph||'')}</div></div>`).join('')}${btns(b.buttons)}</div>`,
+  alerts: b => `<div class="card">${head(b.title)}${b.items.map((a,i)=>`<div class="ai ${i===b.sel?'sel':''}"><span class="dot" style="background:${tn(a.sev)}"></span><div><b>${E(a.title)}</b><div class="m">${E(a.meta)}</div></div></div>`).join('')}</div>`,
+  detail: b => `<div class="card">${head(b.title)}${b.fields.map(f=>`<div class="kv"><span>${E(f[0])}</span><b>${E(f[1])}</b></div>`).join('')}${btns(b.buttons,true)}</div>`,
+  timeline: b => `<div class="card">${head(b.title)}<div class="tl">${b.steps.map(s=>`<div class="st ${s.time==='--'?'pend':''}"><i></i><b>${E(s.cam)}</b><small>${E(s.time)}</small><br><small>${E(s.note)}</small></div>`).join('')}</div></div>`,
+  chat: b => `<div class="card chat">${b.messages.map(m=>`<div class="msg ${m.from}">${E(m.text)}${m.clips?`<div class="clips">${m.clips.map(c=>`<div class="clip"><div class="th">▶</div><div><b>${E(c.cam)}</b> · ${E(c.time)}<br>${E(c.label)}</div></div>`).join('')}</div>`:''}</div>`).join('')}<div class="ib"><div class="inp">${E(b.placeholder)}</div><div class="btn pri">Send</div></div></div>`,
+  chips: b => `<div class="card">${head(b.title)}${b.items.map(i=>`<div class="chip">${E(i)}</div>`).join('')}</div>`
+};
+
+function render(d, nav) {
+  const s = d.screen; let h;
+  if (s.layout === 'auth') {
+    const f = s.form;
+    h = `<div class="auth"><div class="brand"><h1>${E(s.brand[0])}</h1><p>${E(s.brand[1])}</p></div><div class="fc"><div class="card"><h3>${E(f.title)}</h3><div class="sub">${E(f.subtitle)}</div>${f.fields.map(x=>`<div class="fl2"><label>${E(x.label)}</label><div class="inp">${E(x.ph)}</div></div>`).join('')}${btns(f.buttons)}<div class="lnk">${E(f.link)}</div><div class="note">${E(f.note)}</div></div></div></div>`;
+  } else {
+    h = `<div class="app"><aside><div class="logo">Smart Surveillance</div>${nav.map(n=>`<div class="ni ${n===s.nav?'act':''}">${E(n)}</div>`).join('')}</aside><main><div class="top"><h2>${E(s.title)}</h2><span class="user">Operator ▾</span></div><div class="content">${
+      s.rows.map(r=>`<div class="row">${r.map(b=>`<div style="flex:${b.f||1}">${B[b.t](b)}</div>`).join('')}</div>`).join('')}</div></main></div>`;
+  }
+  document.getElementById('sheet').innerHTML = h;
+  document.getElementById('progress').textContent = `Screen ${d.index+1} of ${d.total}: ${s.name}`;
+  document.getElementById('hint').textContent = d.index+1 === d.total ? 'Last screen. Download it, then type q in the terminal.' : 'Download the PNG, then press Enter in the terminal for the next screen.';
+  cur = s;
+}
+function setMode(m) {
+  mode = m; document.getElementById('sheet').classList.toggle('wf', m === 'wire');
+  document.getElementById('mc').classList.toggle('on', m === 'color'); document.getElementById('mw').classList.toggle('on', m === 'wire');
+}
+document.getElementById('mc').onclick = () => setMode('color');
+document.getElementById('mw').onclick = () => setMode('wire');
+
+async function poll() {
+  try {
+    const d = await (await fetch('/api/current', {cache:'no-store'})).json();
+    if (d.index !== shown) { shown = d.index; render(d, d.nav); setMode(mode); }
+  } catch (e) { document.getElementById('progress').textContent = 'Server stopped – restart the Python script'; }
+}
+poll(); setInterval(poll, 800);
+
+document.getElementById('dl').onclick = async () => {
+  if (!cur) return;
+  if (typeof html2canvas === 'undefined') { alert('html2canvas could not load. Check your internet connection.'); return; }
+  const el = document.getElementById('sheet');
+  const canvas = await html2canvas(el, {scale: 2, backgroundColor: '#ffffff', width: el.offsetWidth, height: el.offsetHeight});
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = `${cur.id}_${cur.name.replace(/[^A-Za-z0-9]+/g,'_')}_${mode === 'wire' ? 'wireframe' : 'color'}.png`;
+  a.click();
+};
+</script>
+</body>
+</html>

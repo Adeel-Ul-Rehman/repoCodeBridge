@@ -1,142 +1,235 @@
 // backend/services/codeFormatter.js
 
-// Get language for syntax highlighting
-function getLanguageFromPath(filepath) {
-    const ext = filepath.substring(filepath.lastIndexOf('.') + 1).toLowerCase();
+// Comprehensive mapping of file extensions to markdown language specifiers
+const LANGUAGE_MAP = {
+    // JavaScript / TypeScript
+    'js': 'javascript', 'mjs': 'javascript', 'cjs': 'javascript',
+    'jsx': 'jsx', 'ts': 'typescript', 'tsx': 'tsx',
     
-    const languageMap = {
-        'js': 'javascript', 'jsx': 'jsx', 'ts': 'typescript', 'tsx': 'tsx',
-        'py': 'python', 'java': 'java', 'go': 'go', 'rs': 'rust',
-        'c': 'c', 'cpp': 'cpp', 'h': 'c', 'hpp': 'cpp',
-        'cs': 'csharp', 'php': 'php', 'rb': 'ruby', 'html': 'html',
-        'htm': 'html', 'css': 'css', 'scss': 'scss', 'json': 'json',
-        'xml': 'xml', 'yaml': 'yaml', 'yml': 'yaml', 'md': 'markdown',
-        'sql': 'sql', 'sh': 'bash', 'bash': 'bash'
-    };
+    // Python
+    'py': 'python', 'pyw': 'python',
     
-    return languageMap[ext] || 'plaintext';
+    // Systems & Compiled
+    'go': 'go',
+    'rs': 'rust',
+    'c': 'c', 'h': 'c',
+    'cpp': 'cpp', 'hpp': 'cpp', 'cc': 'cpp', 'cxx': 'cpp',
+    'cs': 'csharp',
+    'java': 'java',
+    'kt': 'kotlin', 'kts': 'kotlin',
+    'swift': 'swift',
+    'scala': 'scala',
+    'zig': 'zig',
+    
+    // Scripting & Web
+    'php': 'php',
+    'rb': 'ruby',
+    'lua': 'lua',
+    'r': 'r',
+    'sh': 'bash', 'bash': 'bash', 'zsh': 'bash',
+    'sql': 'sql',
+    'html': 'html', 'htm': 'html',
+    'css': 'css', 'scss': 'scss', 'sass': 'sass', 'less': 'less',
+    'vue': 'vue', 'svelte': 'svelte', 'astro': 'astro',
+    
+    // Data & Config
+    'json': 'json',
+    'json5': 'json',
+    'yaml': 'yaml', 'yml': 'yaml',
+    'toml': 'toml',
+    'xml': 'xml',
+    'md': 'markdown', 'mdx': 'markdown',
+    'txt': 'text',
+    'env': 'properties',
+    'dockerfile': 'dockerfile',
+    'makefile': 'makefile',
+};
+
+// Priority files to present first so AI grasps repo architecture and dependencies upfront
+const PRIORITY_MANIFESTS = [
+    'README.md',
+    'readme.md',
+    'package.json',
+    'Cargo.toml',
+    'requirements.txt',
+    'pyproject.toml',
+    'setup.py',
+    'go.mod',
+    'pom.xml',
+    'build.gradle',
+    'Gemfile',
+    'composer.json',
+    'tsconfig.json',
+];
+
+export function getLanguageFromPath(filepath) {
+    const filename = filepath.split('/').pop().toLowerCase();
+    if (filename === 'dockerfile' || filename.startsWith('dockerfile.')) return 'dockerfile';
+    if (filename === 'makefile') return 'makefile';
+    if (filename === '.env.example' || filename === '.env') return 'properties';
+
+    const ext = filename.substring(filename.lastIndexOf('.') + 1);
+    return LANGUAGE_MAP[ext] || 'plaintext';
 }
 
-// Generate directory tree
+// Generate ASCII directory structure tree
 export function generateDirectoryTree(files) {
     const tree = {};
-    
+
     for (const file of files) {
         const parts = file.path.split('/');
         let current = tree;
         for (let i = 0; i < parts.length; i++) {
             const part = parts[i];
             if (i === parts.length - 1) {
-                current[part] = null;
+                current[part] = null; // file
             } else {
                 if (!current[part]) current[part] = {};
                 current = current[part];
             }
         }
     }
-    
-    function renderTree(node, prefix = '') {
+
+    function renderNode(node, prefix = '') {
         let result = '';
-        const keys = Object.keys(node).sort();
-        
+        const keys = Object.keys(node).sort((a, b) => {
+            const aIsDir = node[a] !== null;
+            const bIsDir = node[b] !== null;
+            if (aIsDir && !bIsDir) return -1;
+            if (!aIsDir && bIsDir) return 1;
+            return a.localeCompare(b);
+        });
+
         for (let i = 0; i < keys.length; i++) {
             const key = keys[i];
             const isLast = i === keys.length - 1;
             const isDir = node[key] !== null;
-            
+
             result += prefix;
             result += isLast ? '└── ' : '├── ';
             result += key;
             if (isDir) result += '/';
             result += '\n';
-            
+
             if (isDir) {
-                const newPrefix = prefix + (isLast ? '    ' : '│   ');
-                result += renderTree(node[key], newPrefix);
+                const childPrefix = prefix + (isLast ? '    ' : '│   ');
+                result += renderNode(node[key], childPrefix);
             }
         }
         return result;
     }
-    
-    return '```\n' + renderTree(tree) + '```';
+
+    return '```text\n' + renderNode(tree) + '```';
 }
 
-// Convert to markdown
+// Format entire repository into clean, high-density AI-readable Markdown
 export function formatToMarkdown(repoData) {
     const { repoInfo, files, fetchedAt } = repoData;
-    
-    let markdown = `# Repository: ${repoInfo.fullName}\n\n`;
-    markdown += `## Metadata\n`;
-    markdown += `- **Fetched at:** ${fetchedAt}\n`;
-    markdown += `- **Default branch:** ${repoInfo.defaultBranch}\n`;
-    markdown += `- **Total files:** ${repoInfo.totalFiles}\n`;
-    markdown += `- **Total size:** ${(repoInfo.totalSizeKB / 1024).toFixed(2)} MB\n`;
-    markdown += `- **Total characters:** ${repoInfo.totalChars.toLocaleString()}\n`;
-    
+
+    const totalLines = files.reduce((acc, f) => acc + (f.content ? f.content.split('\n').length : 0), 0);
+    const estTokens = repoInfo.estimatedTokens || Math.round((repoInfo.totalChars || 0) / 4);
+
+    let md = '';
+
+    // 1. Header with Repository Metadata
+    md += `# Repository: ${repoInfo.fullName}\n\n`;
+    md += `> **RepoCodeBridge AI Codebase Dump**\n`;
+    md += `> This single document contains the complete source code and directory hierarchy of \`${repoInfo.fullName}\`.\n`;
+    md += `> It is formatted specifically for direct ingestion and reasoning by AI models (ChatGPT, Claude, Gemini, DeepSeek, Cursor, Copilot).\n\n`;
+
+    md += `## 📊 Repository Summary\n`;
+    md += `- **Repository URL:** https://github.com/${repoInfo.fullName}\n`;
     if (repoInfo.description) {
-        markdown += `- **Description:** ${repoInfo.description}\n`;
+        md += `- **Description:** ${repoInfo.description}\n`;
     }
-    
-    markdown += `\n---\n\n`;
-    markdown += `## 📁 Directory Structure\n\n`;
-    markdown += generateDirectoryTree(files);
-    markdown += `\n---\n\n`;
-    markdown += `## 📄 File Contents\n\n`;
-    
-    const sortedFiles = [...files].sort((a, b) => a.path.localeCompare(b.path));
-    
-    for (const file of sortedFiles) {
-        if (file.content) {
-            markdown += `### File: \`${file.path}\`\n\n`;
-            markdown += `\`\`\`${getLanguageFromPath(file.path)}\n`;
-            markdown += file.content;
-            if (!file.content.endsWith('\n')) markdown += '\n';
-            markdown += `\`\`\`\n\n`;
+    md += `- **Default Branch:** \`${repoInfo.defaultBranch}\`\n`;
+    md += `- **Total Files:** ${repoInfo.totalFiles}\n`;
+    md += `- **Total Code Lines:** ~${totalLines.toLocaleString()}\n`;
+    md += `- **Total Characters:** ${(repoInfo.totalChars || 0).toLocaleString()}\n`;
+    md += `- **Estimated AI Tokens:** ~${estTokens.toLocaleString()}\n`;
+    md += `- **Stars:** ⭐ ${repoInfo.stars || 0} | **Forks:** 🍴 ${repoInfo.forks || 0}\n`;
+    md += `- **Fetched Date:** ${fetchedAt}\n\n`;
+
+    md += `---\n\n`;
+
+    // 2. Directory Hierarchy Tree
+    md += `## 📁 Directory Structure\n\n`;
+    md += generateDirectoryTree(files);
+    md += `\n\n---\n\n`;
+
+    // 3. Separate priority manifest files (README, package.json, etc.) from other files
+    const priorityFiles = [];
+    const regularFiles = [];
+
+    for (const file of files) {
+        const base = file.path.split('/').pop();
+        if (PRIORITY_MANIFESTS.includes(base) || file.path.toLowerCase() === 'readme.md') {
+            priorityFiles.push(file);
+        } else {
+            regularFiles.push(file);
         }
     }
-    
-    markdown += `---\n`;
-    markdown += `*Generated by RepoCodeBridge | AI-Readable Format*`;
-    
-    return markdown;
+
+    // Sort regular files alphabetically by path
+    regularFiles.sort((a, b) => a.path.localeCompare(b.path));
+    priorityFiles.sort((a, b) => {
+        const aIndex = PRIORITY_MANIFESTS.indexOf(a.path.split('/').pop());
+        const bIndex = PRIORITY_MANIFESTS.indexOf(b.path.split('/').pop());
+        return (aIndex === -1 ? 99 : aIndex) - (bIndex === -1 ? 99 : bIndex);
+    });
+
+    const orderedFiles = [...priorityFiles, ...regularFiles];
+
+    // 4. File Contents with Clean Delimiters
+    md += `## 📄 Source Code Files (${orderedFiles.length})\n\n`;
+
+    for (const file of orderedFiles) {
+        if (!file.content && file.content !== '') continue;
+
+        const lang = getLanguageFromPath(file.path);
+        const lineCount = file.content.split('\n').length;
+        const sizeKb = (file.size / 1024).toFixed(1);
+
+        // Escape fence backticks if file contains triple backticks
+        const fence = file.content.includes('```') ? '````' : '```';
+
+        md += `================================================================\n`;
+        md += `File: ${file.path}\n`;
+        md += `Language: ${lang} | Lines: ${lineCount} | Size: ${sizeKb} KB\n`;
+        md += `================================================================\n`;
+        md += `${fence}${lang}\n`;
+        md += file.content;
+        if (!file.content.endsWith('\n')) md += '\n';
+        md += `${fence}\n\n`;
+    }
+
+    md += `---\n`;
+    md += `*Generated automatically by RepoCodeBridge | Full AI-Readable Format*\n`;
+
+    return md;
 }
 
-// JSON format
+// Structured JSON export for programmatic consumers
 export function formatToJSON(repoData) {
     const { repoInfo, files, fetchedAt } = repoData;
-    
-    const output = {
+
+    return JSON.stringify({
         metadata: {
             repository: repoInfo.fullName,
-            fetchedAt: fetchedAt,
+            url: `https://github.com/${repoInfo.fullName}`,
             defaultBranch: repoInfo.defaultBranch,
+            description: repoInfo.description || '',
             totalFiles: repoInfo.totalFiles,
-            totalSizeMB: (repoInfo.totalSizeKB / 1024).toFixed(2),
-            description: repoInfo.description || null,
+            totalChars: repoInfo.totalChars,
+            estimatedTokens: repoInfo.estimatedTokens || Math.round(repoInfo.totalChars / 4),
+            fetchedAt,
         },
-        structure: {},
-        files: {},
-    };
-    
-    for (const file of files) {
-        output.files[file.path] = {
-            content: file.content,
-            size: file.size,
-            language: getLanguageFromPath(file.path),
-        };
-        
-        const parts = file.path.split('/');
-        let current = output.structure;
-        for (let i = 0; i < parts.length; i++) {
-            const part = parts[i];
-            if (i === parts.length - 1) {
-                current[part] = 'file';
-            } else {
-                if (!current[part]) current[part] = {};
-                current = current[part];
-            }
-        }
-    }
-    
-    return JSON.stringify(output, null, 2);
+        files: files.map(f => ({
+            path: f.path,
+            language: getLanguageFromPath(f.path),
+            sizeBytes: f.size,
+            lines: f.content ? f.content.split('\n').length : 0,
+            content: f.content,
+        })),
+    }, null, 2);
 }

@@ -4,7 +4,7 @@ import { authenticate } from '../../../../backend/middleware/auth.js';
 import { createRepoZipFromGitHub, createSimpleZip } from '../../../../backend/services/zipService.js';
 
 export default async function handler(req, res) {
-    const { slug } = req.query;
+    const slug = req.query?.slug || req.params?.slug;
     
     if (req.method !== 'GET') {
         return res.status(405).json({ error: 'Method not allowed' });
