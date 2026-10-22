@@ -99,7 +99,7 @@ export async function executeJobStep(jobId, workerId = 'worker') {
         if (currentStage === 'INITIALIZING' || currentStage === 'FETCHING_TREE') {
             logStage('FETCHING_TREE', `Target: ${lockedJob.repo_url}`);
             const { owner, repo } = parseGitHubUrl(lockedJob.repo_url);
-            const branch = options.branch || 'main';
+            const branch = options.branch || lockedJob.branch || null;
 
             const treeMetadata = await fetchRepoTree(owner, repo, branch, options);
             let filesToFetch = [];

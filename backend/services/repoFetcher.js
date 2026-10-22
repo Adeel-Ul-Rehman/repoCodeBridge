@@ -8,6 +8,10 @@ const octokit = new Octokit({
     userAgent: 'RepoCodeBridge v2.0.0',
 });
 
+export function getOctokit() {
+    return octokit;
+}
+
 // Cache for repository data to avoid unnecessary re-fetches
 const repoCache = new Map();
 const treeCache = new Map();
@@ -585,7 +589,6 @@ async function fetchViaGitTree(owner, repo, branch, options = {}) {
  * Fetches an individual file blob via GitHub Git Data API with rate-limit handling and size caps
  */
 export async function fetchSingleFileBlob(owner, repo, fileSha, filePath) {
-    const octokit = getOctokit();
     const blobRes = await withRateLimitRetry(
         () => octokit.rest.git.getBlob({
             owner,
@@ -737,7 +740,8 @@ export async function fetchRepoTree(owner, repo, branch = 'main', options = {}) 
             treeCache.delete(cacheKey);
         }
 
-        console.log(sanitizeLog(`[RepoFetcher] Fetching Git tree for ${owner}/${repo}@${branch}`));
+        let targetBranch = branch || 'main';
+        console.log(sanitizeLog(`[RepoFetcher] Fetching Git tree for ${owner}/${repo}@${targetBranch}`));
         
         let treeRes;
         try {
@@ -745,18 +749,40 @@ export async function fetchRepoTree(owner, repo, branch = 'main', options = {}) 
                 () => octokit.rest.git.getTree({
                     owner,
                     repo,
-                    tree_sha: branch,
+                    tree_sha: targetBranch,
                     recursive: 'true',
                 }),
                 { stage: 'FETCH_TREE', maxRetries: 2 }
             );
         } catch (treeErr) {
-            // If branch name fails with 404/409, try resolving default branch commit SHA first
+            // If branch name fails with 404/409, try resolving commit SHA or fallback to repo default branch
             if (treeErr.status === 404 || treeErr.status === 409) {
-                const branchRes = await withRateLimitRetry(
-                    () => octokit.rest.repos.getBranch({ owner, repo, branch }),
-                    { stage: 'GET_BRANCH', maxRetries: 1 }
-                );
+                let branchRes = null;
+                try {
+                    branchRes = await withRateLimitRetry(
+                        () => octokit.rest.repos.getBranch({ owner, repo, branch: targetBranch }),
+                        { stage: 'GET_BRANCH', maxRetries: 1 }
+                    );
+                } catch (bErr) {
+                    if (bErr.status === 404) {
+                        // The requested/defaulted branch does not exist on this repository.
+                        // Query GitHub for the repository's actual default branch (e.g. master instead of main)
+                        const repoMeta = await withRateLimitRetry(
+                            () => octokit.rest.repos.get({ owner, repo }),
+                            { stage: 'GET_REPO_DEFAULT_BRANCH', maxRetries: 1 }
+                        );
+                        const fallbackBranch = repoMeta.data?.default_branch || 'master';
+                        console.log(sanitizeLog(`[RepoFetcher] Branch "${targetBranch}" not found for ${owner}/${repo}. Falling back to default branch "${fallbackBranch}".`));
+                        targetBranch = fallbackBranch;
+                        branchRes = await withRateLimitRetry(
+                            () => octokit.rest.repos.getBranch({ owner, repo, branch: fallbackBranch }),
+                            { stage: 'GET_DEFAULT_BRANCH', maxRetries: 1 }
+                        );
+                    } else {
+                        throw bErr;
+                    }
+                }
+
                 const commitSha = branchRes.data.commit.sha;
                 treeRes = await withRateLimitRetry(
                     () => octokit.rest.git.getTree({

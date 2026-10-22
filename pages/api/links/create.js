@@ -109,7 +109,7 @@ export default async function handler(req, res) {
         const baseUrl = `${protocol}://${host}`;
 
         const fetchOptions = {
-            branch: typeof branch === 'string' && branch.trim() ? branch.trim() : null,
+            branch: typeof branch === 'string' && branch.trim() ? branch.trim() : (validation.repoInfo?.defaultBranch || null),
             subpath: typeof subpath === 'string' && subpath.trim() ? subpath.trim() : null,
             selectedPaths: validatedPaths.length > 0 ? validatedPaths : null,
             excludeTests: Boolean(excludeTests),
