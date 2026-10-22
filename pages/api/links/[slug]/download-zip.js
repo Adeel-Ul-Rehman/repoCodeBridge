@@ -10,12 +10,21 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Method not allowed' });
     }
     
-    await new Promise((resolve, reject) => {
-        authenticate(req, res, (err) => {
-            if (err) reject(err);
-            else resolve();
+    try {
+        await new Promise((resolve, reject) => {
+            authenticate(req, res, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
         });
-    });
+    } catch (authErr) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: 'Internal server error' });
+        }
+        return;
+    }
+    
+    if (res.headersSent) return;
     
     if (!req.user) {
         return res.status(401).json({ error: 'Authentication required' });
@@ -44,13 +53,20 @@ export default async function handler(req, res) {
             zipBuffer = await createRepoZipFromGitHub(link.repo_url, link.repo_name, slug);
         } catch (fetchError) {
             console.error('GitHub fetch failed:', fetchError.message);
+            if (!link.gist_url) {
+                throw new Error('No storage URL available for fallback ZIP generation');
+            }
             const response = await fetch(link.gist_url);
             if (response.ok) {
                 const markdownContent = await response.text();
                 zipBuffer = await createSimpleZip(link.repo_name, markdownContent);
             } else {
-                throw new Error('Unable to fetch repository content');
+                throw new Error('Unable to fetch repository content from storage');
             }
+        }
+        
+        if (!zipBuffer || !zipBuffer.length) {
+            throw new Error('Empty ZIP archive generated');
         }
         
         const filename = `${link.repo_name.replace('/', '-')}-source-code.zip`;
@@ -61,7 +77,9 @@ export default async function handler(req, res) {
         res.status(200).send(zipBuffer);
         
     } catch (error) {
-        console.error('Download ZIP error:', error);
-        res.status(500).json({ error: 'Failed to create ZIP file: ' + error.message });
+        console.error('Download ZIP error:', error.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to create ZIP file: ' + error.message });
+        }
     }
 }

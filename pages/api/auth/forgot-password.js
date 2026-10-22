@@ -1,6 +1,7 @@
 // pages/api/auth/forgot-password.js
 import nodemailer from 'nodemailer';
 import { query } from '../../../backend/config/database.js';
+import { authLimiter, applyRateLimit } from '../../../backend/middleware/rateLimit.js';
 
 // Generate 6-digit OTP
 function generateOTP() {
@@ -22,6 +23,10 @@ export default async function handler(req, res) {
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
     }
+
+    // Apply rate limiting (15 attempts per 15 min per IP)
+    await applyRateLimit(req, res, authLimiter);
+    if (res.headersSent) return;
     
     const { email } = req.body;
     
@@ -48,11 +53,14 @@ export default async function handler(req, res) {
         const expiresAt = new Date();
         expiresAt.setMinutes(expiresAt.getMinutes() + 15);
         
-        // Delete existing OTP and insert new
+        // Ensure attempts column exists
+        await query('ALTER TABLE password_resets ADD COLUMN IF NOT EXISTS attempts INTEGER DEFAULT 0').catch(() => {});
+
+        // Delete existing OTP and insert new with 0 attempts
         await query('DELETE FROM password_resets WHERE user_id = $1', [user.id]);
         await query(
-            `INSERT INTO password_resets (user_id, token, expires_at)
-             VALUES ($1, $2, $3)`,
+            `INSERT INTO password_resets (user_id, token, expires_at, attempts)
+             VALUES ($1, $2, $3, 0)`,
             [user.id, otp, expiresAt]
         );
         

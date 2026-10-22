@@ -11,49 +11,69 @@ function verifyToken(token) {
 }
 
 async function authenticate(req, res, next) {
-    let token = req.cookies?.token;
-    
-    if (!token && req.headers.authorization) {
-        token = req.headers.authorization.replace('Bearer ', '');
+    try {
+        let token = req.cookies?.token;
+        
+        if (!token && req.headers?.authorization) {
+            token = req.headers.authorization.replace(/^Bearer\s+/i, '');
+        }
+        
+        if (!token) {
+            if (!res.headersSent) {
+                res.status(401).json({ error: 'Authentication required' });
+            }
+            if (typeof next === 'function') next();
+            return;
+        }
+        
+        const decoded = verifyToken(token);
+        if (!decoded || !decoded.userId) {
+            if (!res.headersSent) {
+                res.status(401).json({ error: 'Invalid or expired token' });
+            }
+            if (typeof next === 'function') next();
+            return;
+        }
+        
+        const result = await query(
+            'SELECT id, email, created_at, password_hash, is_premium FROM users WHERE id = $1',
+            [decoded.userId]
+        );
+        
+        if (result.rows.length === 0) {
+            if (!res.headersSent) {
+                res.status(401).json({ error: 'User not found' });
+            }
+            if (typeof next === 'function') next();
+            return;
+        }
+        
+        const user = result.rows[0];
+        req.user = user;
+        req.userId = user.id;
+        if (typeof next === 'function') next();
+    } catch (err) {
+        console.error('Authentication database error:', err.message);
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Internal server error' });
+        }
+        if (typeof next === 'function') next(err);
     }
-    
-    if (!token) {
-        return res.status(401).json({ error: 'Authentication required' });
-    }
-    
-    const decoded = verifyToken(token);
-    if (!decoded) {
-        return res.status(401).json({ error: 'Invalid or expired token' });
-    }
-    
-    const result = await query(
-        'SELECT id, email, created_at, password_hash FROM users WHERE id = $1',
-        [decoded.userId]
-    );
-    
-    if (result.rows.length === 0) {
-        return res.status(401).json({ error: 'User not found' });
-    }
-    
-    const user = result.rows[0];
-    req.user = user;
-    req.userId = user.id;
-    next();
 }
 
 async function optionalAuth(req, res, next) {
     try {
         let token = req.cookies?.token;
         
-        if (!token && req.headers.authorization) {
-            token = req.headers.authorization.replace('Bearer ', '');
+        if (!token && req.headers?.authorization) {
+            token = req.headers.authorization.replace(/^Bearer\s+/i, '');
         }
         
         if (token) {
             const decoded = verifyToken(token);
-            if (decoded) {
+            if (decoded && decoded.userId) {
                 const result = await query(
-                    'SELECT id, email, created_at FROM users WHERE id = $1',
+                    'SELECT id, email, created_at, is_premium FROM users WHERE id = $1',
                     [decoded.userId]
                 );
                 if (result.rows.length > 0) {
@@ -65,7 +85,7 @@ async function optionalAuth(req, res, next) {
     } catch (err) {
         // Ignore auth errors in optional auth
     }
-    next();
+    if (typeof next === 'function') next();
 }
 
 export { authenticate, optionalAuth };

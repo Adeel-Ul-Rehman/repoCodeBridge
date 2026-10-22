@@ -1,11 +1,16 @@
 // pages/api/auth/login.js
 import jwt from 'jsonwebtoken';
 import User from '../../../backend/models/User.js';
+import { authLimiter, applyRateLimit } from '../../../backend/middleware/rateLimit.js';
 
 export default async function handler(req, res) {
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
     }
+
+    // Apply rate limiting (15 attempts per 15 min per IP)
+    await applyRateLimit(req, res, authLimiter);
+    if (res.headersSent) return;
     
     const { email, password } = req.body;
     
@@ -30,23 +35,24 @@ export default async function handler(req, res) {
         
         await User.updateLastLogin(user.id);
         
-        const premiumEmails = (process.env.PREMIUM_USERS || '').split(',');
-        const isPremium = premiumEmails.includes(user.email) || user.is_premium;
-        
         const token = jwt.sign(
             { userId: user.id, email: user.email },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
         
-        res.setHeader('Set-Cookie', `token=${token}; HttpOnly; Path=/; Max-Age=${7 * 24 * 60 * 60}; SameSite=Lax`);
+        const isProd = process.env.NODE_ENV === 'production';
+        res.setHeader(
+            'Set-Cookie', 
+            `token=${token}; HttpOnly; Path=/; Max-Age=${7 * 24 * 60 * 60}; SameSite=Lax${isProd ? '; Secure' : ''}`
+        );
         
         res.status(200).json({
             success: true,
             user: {
                 id: user.id,
                 email: user.email,
-                is_premium: isPremium,
+                is_premium: false,
             },
             token: token,
         });
@@ -54,4 +60,4 @@ export default async function handler(req, res) {
         console.error('Login error:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
-}
+}
